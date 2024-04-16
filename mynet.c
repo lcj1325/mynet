@@ -14,7 +14,7 @@
 #include <rte_mbuf.h>
 #include <rte_ether.h>
 
-
+#define MAKE_IPV4_ADDR(a, b, c, d) (a + (b<<8) + (c<<16) + (d<<24))
 
 #define RX_RING_SIZE 1024
 #define TX_RING_SIZE 1024
@@ -117,73 +117,10 @@ port_init(uint16_t port, struct rte_mempool *mbuf_pool)
 }
 /* >8 End of main functional part of port initialization. */
 
-static int encap_pkt_ethhdr(uint8_t *buf, uint8_t *new_buf) {
-
-	struct rte_ether_hdr *eth = (struct rte_ether_hdr *)buf;
-	struct rte_ether_hdr *new_eth = (struct rte_ether_hdr *)new_buf;
-	rte_memcpy(&new_eth->src_addr, &eth->dst_addr, sizeof(new_eth->src_addr));
-	rte_memcpy(&new_eth->dst_addr, &eth->src_addr, sizeof(new_eth->dst_addr));
-	rte_memcpy(&new_eth->ether_type, &eth->ether_type, sizeof(new_eth->ether_type));
-
-	return 0;
-}
-
-
-static int encap_pkt_ip4hdr(uint8_t *buf, uint8_t *new_buf, uint16_t len) {
-
-	struct rte_ipv4_hdr *ip = (struct rte_ipv4_hdr *)(buf + sizeof(struct rte_ether_hdr));
-	struct rte_ipv4_hdr *new_ip = (struct rte_ipv4_hdr *)(new_buf + sizeof(struct rte_ether_hdr));
-	new_ip->version_ihl = 0x45;
-	new_ip->type_of_service = 0;
-	new_ip->total_length = htons(len + sizeof(struct rte_udp_hdr) + sizeof(struct rte_ipv4_hdr));
-	new_ip->packet_id = 0;
-	new_ip->fragment_offset = 0;
-	new_ip->time_to_live = 64; // ttl = 64
-	new_ip->next_proto_id = IPPROTO_UDP;
-	new_ip->hdr_checksum = 0;
-	rte_memcpy(&new_ip->src_addr, &ip->dst_addr, sizeof(new_ip->src_addr));
-	rte_memcpy(&new_ip->dst_addr, &ip->src_addr, sizeof(new_ip->src_addr));
-
-	new_ip->hdr_checksum = rte_ipv4_cksum(new_ip);
-	
-	return 0;
-		
-}
-
-static int encap_pkt_udphdr(uint8_t *buf, uint8_t *new_buf, uint8_t *data, uint16_t len) {
-
-	// 3 udphdr 
-
-	struct rte_udp_hdr *udp = (struct rte_udp_hdr *)(buf + sizeof(struct rte_ether_hdr) + 
-								sizeof(struct rte_ipv4_hdr));
-	struct rte_udp_hdr *new_udp = (struct rte_udp_hdr *)(new_buf + sizeof(struct rte_ether_hdr) + 
-								sizeof(struct rte_ipv4_hdr));
-	rte_memcpy(&new_udp->src_port, &udp->dst_port, sizeof(new_udp->src_port));
-	rte_memcpy(&new_udp->dst_port, &udp->src_port, sizeof(new_udp->dst_port));
-	new_udp->dgram_len = htons(len + sizeof(struct rte_udp_hdr));
-	new_udp->dgram_cksum = 0;
-
-	rte_memcpy((uint8_t*)(udp + 1), data, len);
-
-	udp->dgram_cksum = rte_ipv4_udptcp_cksum(ip, udp);
-
-	return 0;
-
-}
-
-static int encap_pkt_tcpphdr() {
-
-	return 0;
-}
-
-static void send_udp_pkt(struct rte_mbuf *buf) {
-
-	
-}
-
 static void format_eth_hdr(struct rte_ether_hdr *ethhdr) {
 
-	printf("[ %02" PRIx8 ":%02" PRIx8 ":%02" PRIx8 ":%02" PRIx8 ":%02" PRIx8 ":%02" PRIx8 
+	printf("[ "
+            "%02" PRIx8 ":%02" PRIx8 ":%02" PRIx8 ":%02" PRIx8 ":%02" PRIx8 ":%02" PRIx8
 			" -> "
 			"%02" PRIx8 ":%02" PRIx8 ":%02" PRIx8 ":%02" PRIx8 ":%02" PRIx8 ":%02" PRIx8
 			" ]\n",
@@ -197,7 +134,7 @@ static void format_ip4_hdr(struct rte_ipv4_hdr *ip4hdr) {
 	struct in_addr addr;
 	addr.s_addr = ip4hdr->src_addr;
 	printf("[ %s -> ", inet_ntoa(addr));
-	
+
 	addr.s_addr = ip4hdr->dst_addr;
 	printf("%s ]\n", inet_ntoa(addr));
 
@@ -205,89 +142,196 @@ static void format_ip4_hdr(struct rte_ipv4_hdr *ip4hdr) {
 
 static void format_udp_hdr(struct rte_udp_hdr *udphdr) {
 
-	printf("[ %u -> %u ]\n", rte_le_to_cpu_16(udphdr->src_port), rte_le_to_cpu_16(udphdr->dst_port));
-	printf("[ length = %u, %s ]\n", rte_le_to_cpu_16(udphdr->dgram_len), (char *)(udphdr + 1));
-	
+	printf("[ %u -> %u ]\n", rte_be_to_cpu_16(udphdr->src_port), rte_be_to_cpu_16(udphdr->dst_port));
+	printf("[ length = %u, %s ]\n", rte_be_to_cpu_16(udphdr->dgram_len), (char *)(udphdr + 1));
+
 }
 
-static void pkt_udp_proc(struct rte_mbuf *buf) {
+static void format_ipv4_udp_pkt(struct rte_mbuf *buf) {
 
-	struct rte_ether_hdr *ethhdr = rte_pktmbuf_mtod(buf, struct rte_ether_hdr*);
-	struct rte_ipv4_hdr *ip4hdr = (struct rte_ipv4_hdr *)(ethhdr + 1);
-	struct rte_udp_hdr *udphdr = (struct rte_udp_hdr *)(ip4hdr + 1);
+    struct rte_ether_hdr *ethhdr = rte_pktmbuf_mtod(buf, struct rte_ether_hdr*);
+    struct rte_ipv4_hdr *ip4hdr = (struct rte_ipv4_hdr *)(ethhdr + 1);
+    struct rte_udp_hdr *udphdr = (struct rte_udp_hdr *)(ip4hdr + 1);
 
-	format_eth_hdr(ethhdr);
-	format_ip4_hdr(ip4hdr);
-	format_udp_hdr(udphdr);
+    format_eth_hdr(ethhdr);
+    format_ip4_hdr(ip4hdr);
+    format_udp_hdr(udphdr);
+
+}
+
+static int encap_pkt_ethhdr(struct rte_mbuf *buf, struct rte_mbuf *new_buf) {
+
+	struct rte_ether_hdr *eth =  rte_pktmbuf_mtod(buf, struct rte_ether_hdr*);
+	struct rte_ether_hdr *new_eth =  rte_pktmbuf_mtod(new_buf, struct rte_ether_hdr*);
+	rte_memcpy(&new_eth->src_addr, &eth->dst_addr, sizeof(new_eth->src_addr));
+	rte_memcpy(&new_eth->dst_addr, &eth->src_addr, sizeof(new_eth->dst_addr));
+	rte_memcpy(&new_eth->ether_type, &eth->ether_type, sizeof(new_eth->ether_type));
+
+	return 0;
+}
+
+
+static int encap_pkt_ip4hdr(struct rte_mbuf *buf, struct rte_mbuf *new_buf, uint16_t len) {
+
+	struct rte_ipv4_hdr *ip = rte_pktmbuf_mtod_offset(buf, struct rte_ipv4_hdr *,
+                                                        sizeof(struct rte_ether_hdr));
+	struct rte_ipv4_hdr *new_ip = rte_pktmbuf_mtod_offset(new_buf, struct rte_ipv4_hdr *,
+                                                        sizeof(struct rte_ether_hdr));
+	new_ip->version_ihl = 0x45;
+	new_ip->type_of_service = 0;
+	new_ip->total_length = htons(len + sizeof(struct rte_udp_hdr) + sizeof(struct rte_ipv4_hdr));
+	new_ip->packet_id = 0;
+	new_ip->fragment_offset = 0;
+	new_ip->time_to_live = 64; // ttl = 64
+	new_ip->next_proto_id = IPPROTO_UDP;
+	new_ip->hdr_checksum = 0;
+	rte_memcpy(&new_ip->src_addr, &ip->dst_addr, sizeof(new_ip->src_addr));
+	rte_memcpy(&new_ip->dst_addr, &ip->src_addr, sizeof(new_ip->src_addr));
+
+	new_ip->hdr_checksum = rte_ipv4_cksum(new_ip);
+
+	return 0;
+
+}
+
+static int encap_pkt_udphdr(struct rte_mbuf *buf, struct rte_mbuf *new_buf,
+                                    uint8_t *data, uint16_t len) {
+
+	struct rte_udp_hdr *udp = rte_pktmbuf_mtod_offset(buf, struct rte_udp_hdr *,
+                                        sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv4_hdr));
+	struct rte_udp_hdr *new_udp = rte_pktmbuf_mtod_offset(new_buf, struct rte_udp_hdr *,
+                                        sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv4_hdr));
+    struct rte_ipv4_hdr *new_ip = rte_pktmbuf_mtod_offset(new_buf, struct rte_ipv4_hdr *,
+                                                        sizeof(struct rte_ether_hdr));
+	rte_memcpy(&new_udp->src_port, &udp->dst_port, sizeof(new_udp->src_port));
+	rte_memcpy(&new_udp->dst_port, &udp->src_port, sizeof(new_udp->dst_port));
+	new_udp->dgram_len = htons(len + sizeof(struct rte_udp_hdr));
+	new_udp->dgram_cksum = 0;
+
+	rte_memcpy((uint8_t*)(new_udp + 1), data, len);
+
+	new_udp->dgram_cksum = rte_ipv4_udptcp_cksum(new_ip, new_udp);
+
+	return 0;
+
+}
+
+static int encap_pkt_tcpphdr() {
+
+    printf("test ==> encap_pkt_tcpphdr to do ...\n");
+	return 0;
+}
+
+static struct rte_mbuf *encap_udp_reply_pkt(struct rte_mbuf *buf) {
+
+    uint8_t *data;
+    uint16_t length;
+    uint16_t total_len;
+    struct rte_udp_hdr *udphdr = rte_pktmbuf_mtod_offset(buf, struct rte_udp_hdr *,
+                                        sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv4_hdr));
 
 	struct rte_mbuf *new_buf = rte_pktmbuf_alloc(g_mbuf_pool);
 	if (new_buf == NULL) {
-		rte_exit(EXIT_FAILURE, "rte_pktmbuf_alloc error.\n");
+		rte_exit(EXIT_FAILURE, "rte_pktmbuf_alloc udp buf error.\n");
 	}
 
-	uint16_t total_len = length + 42;
+
+    data = (uint8_t *)(udphdr + 1);
+    length = rte_be_to_cpu_16(udphdr->dgram_len) - sizeof(struct rte_udp_hdr);
+	total_len = length + sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv4_hdr)
+	                        + sizeof(struct rte_udp_hdr);
+
 	new_buf->pkt_len = total_len;
 	new_buf->data_len = total_len;
 
-	uint8_t *pktdata = rte_pktmbuf_mtod(new_buf, uint8_t *);
-	encap_udp_pkt(iphdr, pktdata, (uint8_t *)(udphdr + 1), total_len);
+	encap_pkt_ethhdr(buf, new_buf);
+    encap_pkt_ip4hdr(buf, new_buf, length);
+    encap_pkt_udphdr(buf, new_buf, data, length);
+
+    format_ipv4_udp_pkt(new_buf);
+
+    return new_buf;
 
 }
 
+static struct rte_mbuf *pkt_udp_proc(struct rte_mbuf *buf) {
 
-static void pkt_tcp_proc(struct rte_mbuf *buf) {
+	format_ipv4_udp_pkt(buf);
+
+    if (SEND_UDP) {
+        return encap_udp_reply_pkt(buf);
+    }
+
+    return NULL;
+}
+
+static struct rte_mbuf *pkt_tcp_proc(struct rte_mbuf *buf) {
 
 	printf("test ==> pkt_tcp_proc to do ...\n");
+
+    return NULL;
 }
 
-static void pkt_ip4_proc(struct rte_mbuf *buf) {
+static struct rte_mbuf *pkt_ip4_proc(struct rte_mbuf *buf) {
 
-	struct rte_ipv4_hdr *ip4hdr =  rte_pktmbuf_mtod_offset(buf, struct rte_ipv4_hdr *, 
+	struct rte_ipv4_hdr *ip4hdr =  rte_pktmbuf_mtod_offset(buf, struct rte_ipv4_hdr *,
 				sizeof(struct rte_ether_hdr));
+    if (ip4hdr->dst_addr != MAKE_IPV4_ADDR(10, 66, 24, 22)) {
+        return NULL;
+    }
 
 	if (ip4hdr->next_proto_id == IPPROTO_UDP) {
-		pkt_udp_proc(buf);
+		return pkt_udp_proc(buf);
 	}
 	else if (ip4hdr->next_proto_id == IPPROTO_TCP) {
-		pkt_tcp_proc(buf);
+		return pkt_tcp_proc(buf);
 	}
 	else {
-		printf("test ==> pkt_ip4_proc invalid proto, ip4hdr->next_proto_id=%u.\n", 
-				rte_le_to_cpu_16(ip4hdr->next_proto_id));
+		printf("test ==> pkt_ip4_proc invalid proto, ip4hdr->next_proto_id=%u.\n",
+				rte_be_to_cpu_16(ip4hdr->next_proto_id));
 	}
+
+    return NULL;
 }
 
-static void pkt_ip6_proc(struct rte_mbuf *buf) {
+static struct rte_mbuf *pkt_ip6_proc(struct rte_mbuf *buf) {
 
 	printf("test ==> pkt_ip6_proc to do ...\n");
+    return NULL;
 }
 
-static void pkt_eth_proc(struct rte_mbuf *buf) {
+static struct rte_mbuf *pkt_eth_proc(struct rte_mbuf *buf) {
 
 	struct rte_ether_hdr *ehdr = rte_pktmbuf_mtod(buf, struct rte_ether_hdr*);
 
 	if (ehdr->ether_type == rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4)) {
-		pkt_ip4_proc(buf)
+		return pkt_ip4_proc(buf);
 	}
 	else if (ehdr->ether_type == rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV6)) {
-		pkt_ip6_proc(buf)
+		return pkt_ip6_proc(buf);
 	}
 	else {
-		printf("test ==> pkt_eth_proc invalid type, ehdr->ether_type=%x.\n", 
-				rte_le_to_cpu_16(ehdr->ether_type));
+		printf("test ==> pkt_eth_proc invalid type, ehdr->ether_type=%x.\n",
+				rte_be_to_cpu_16(ehdr->ether_type));
 	}
+
+    return NULL;
 
 }
 
-static void pkts_proc(uint16_t nb_rx, struct rte_mbuf *bufs[]) {
+static void pkts_proc(uint16_t nb_rx, struct rte_mbuf *bufs[], uint16_t port) {
 
 	unsigned i = 0;
 	for (i = 0; i < nb_rx; i++) {
-		
-		pkt_eth_proc(bufs[i]);
-		
+
+		struct rte_mbuf *new_buf = pkt_eth_proc(bufs[i]);
+
+        if (new_buf != NULL) {
+            rte_eth_tx_burst(port, 0, &new_buf, 1);
+            rte_pktmbuf_free(new_buf);
+        }
 	}
-	
+
 }
 
 /*
@@ -295,7 +339,7 @@ static void pkts_proc(uint16_t nb_rx, struct rte_mbuf *bufs[]) {
  * an input port and writing to an output port.
  */
 
- /* Basic forwarding application lcore. 8< */
+ /* mynet application lcore. 8< */
 static __rte_noreturn void
 mynet_main(void)
 {
@@ -311,7 +355,7 @@ mynet_main(void)
 
 			printf("WARNING, port %u is on remote NUMA node to "
 					"polling thread.\n\tPerformance will "
-					"not be optimal.\n", port);				
+					"not be optimal.\n", port);
 		}
 
 	}
@@ -321,8 +365,7 @@ mynet_main(void)
 	/* Main work of application loop. 8< */
 	for (;;) {
 		/*
-		 * Receive packets on a port and forward them on the paired
-		 * port. The mapping is 0 -> 1, 1 -> 0, 2 -> 3, 3 -> 2, etc.
+		 * Receive packets on a port and reply from the same port
 		 */
 		RTE_ETH_FOREACH_DEV(port) {
 
@@ -334,18 +377,18 @@ mynet_main(void)
 			if (unlikely(nb_rx == 0))
 				continue;
 
-			pkt_proc(nb_rx, bufs);
+			pkts_proc(nb_rx, bufs, port);
 
 			uint16_t i;
 			for (i = 0; i < nb_rx; i++) {
 				rte_pktmbuf_free(bufs[i]);
 			}
-			
+
 		}
 	}
 	/* >8 End of loop. */
 }
-/* >8 End Basic forwarding application lcore. */
+/* >8 End mynet application lcore. */
 
 /*
  * The main function, which does initialization and calls the per-lcore
@@ -359,8 +402,9 @@ main(int argc, char *argv[])
 
 	/* Initializion the Environment Abstraction Layer (EAL). 8< */
 	int ret = rte_eal_init(argc, argv);
-	if (ret < 0)
+	if (ret < 0) {
 		rte_exit(EXIT_FAILURE, "Error with EAL initialization\n");
+    }
 	/* >8 End of initialization the Environment Abstraction Layer (EAL). */
 
 	argc -= ret;
@@ -368,8 +412,9 @@ main(int argc, char *argv[])
 
 	/* Check that there is an even number of ports to send/receive on. */
 	nb_ports = rte_eth_dev_count_avail();
-	if (nb_ports != 1)
+	if (nb_ports < 1) {
 		rte_exit(EXIT_FAILURE, "Error: number of ports invalid, nb_ports=%d\n", nb_ports);
+    }
 
 	/* Creates a new mempool in memory to hold the mbufs. */
 
@@ -378,18 +423,21 @@ main(int argc, char *argv[])
 		MBUF_CACHE_SIZE, 0, RTE_MBUF_DEFAULT_BUF_SIZE, rte_socket_id());
 	/* >8 End of allocating mempool to hold mbuf. */
 
-	if (g_mbuf_pool == NULL)
+	if (g_mbuf_pool == NULL) {
 		rte_exit(EXIT_FAILURE, "Cannot create mbuf pool\n");
+    }
 
 	/* Initializing all ports. 8< */
-	RTE_ETH_FOREACH_DEV(portid)
-		if (port_init(portid, g_mbuf_pool) != 0)
-			rte_exit(EXIT_FAILURE, "Cannot init port %"PRIu16 "\n",
-					portid);
+	RTE_ETH_FOREACH_DEV(portid) {
+		if (port_init(portid, g_mbuf_pool) != 0) {
+			rte_exit(EXIT_FAILURE, "Cannot init port %"PRIu16 "\n", portid);
+        }
+    }
 	/* >8 End of initializing all ports. */
 
-	if (rte_lcore_count() > 1)
+	if (rte_lcore_count() > 1) {
 		printf("\nWARNING: Too many lcores enabled. Only 1 used.\n");
+    }
 
 	/* Call lcore_main on the main core only. Called on single lcore. 8< */
 	mynet_main();
