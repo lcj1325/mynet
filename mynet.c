@@ -5,6 +5,7 @@
 
 
 #include "arp.h"
+#include "ring.h"
 #include "mynet.h"
 
 
@@ -657,17 +658,20 @@ static struct rte_mbuf *pkt_eth_proc(struct rte_mbuf *buf) {
 
 }
 
-static void pkts_proc(uint16_t nb_rx, struct rte_mbuf *bufs[], uint16_t port) {
+static inline void pkts_proc(const uint16_t nb_rx, struct rte_mbuf *bufs[]) {
 
-	unsigned i = 0;
+    struct inout_ring *ring = inout_ring_instance();
+
+	uint16_t i = 0;
 	for (i = 0; i < nb_rx; i++) {
 
 		struct rte_mbuf *new_buf = pkt_eth_proc(bufs[i]);
 
         if (new_buf != NULL) {
-            rte_eth_tx_burst(port, 0, &new_buf, 1);
-            rte_pktmbuf_free(new_buf);
+            rte_ring_mp_enqueue_burst(ring->out, (void**)&new_buf, 1, NULL);
         }
+
+        rte_pktmbuf_free(bufs[i]);
 	}
 
 }
@@ -702,15 +706,28 @@ static void arp_request_cb(__attribute__((unused)) struct rte_timer *tim, void *
 
 }
 
-/*
- * The lcore main. This is the main thread that does the work, reading from
- * an input port and writing to an output port.
- */
+
+ static int mynet_main(void) {
+
+    struct inout_ring *ring = inout_ring_instance();
+
+    while(1) {
+
+        struct rte_mbuf *rx_bufs[BURST_SIZE];
+		const uint16_t nb_rx = rte_ring_mc_dequeue_burst(ring->in, (void**)rx_bufs, BURST_SIZE, NULL);
+
+        pkts_proc(nb_rx, rx_bufs);
+
+    }
+
+    return 0;
+ }
+
+
 
  /* mynet application lcore. 8< */
-static __rte_noreturn void
-mynet_main(void)
-{
+
+static int work_main(void *arg) {
 	uint16_t port;
 
 	/*
@@ -729,6 +746,7 @@ mynet_main(void)
 	}
 
 	printf("\nCore %u forwarding packets. [Ctrl+C to quit]\n", rte_lcore_id());
+    struct inout_ring *ring = inout_ring_instance();
 
 	/* Main work of application loop. 8< */
 	for (;;) {
@@ -737,20 +755,24 @@ mynet_main(void)
 		 */
 		RTE_ETH_FOREACH_DEV(port) {
 
-			/* Get burst of RX packets, from first port of pair. */
-			struct rte_mbuf *bufs[BURST_SIZE];
-			const uint16_t nb_rx = rte_eth_rx_burst(port, 0,
-					bufs, BURST_SIZE);
+            // rx
+			struct rte_mbuf *rx_bufs[BURST_SIZE];
+			const uint16_t nb_rx = rte_eth_rx_burst(port, 0, rx_bufs, BURST_SIZE);
+			rte_ring_sp_enqueue_burst(ring->in, (void **)rx_bufs, nb_rx, NULL);
 
-			if (unlikely(nb_rx == 0))
-				continue;
 
-			pkts_proc(nb_rx, bufs, port);
+            // tx
+            struct rte_mbuf *tx_bufs[BURST_SIZE];
+    		const uint16_t nb_tx = rte_ring_sc_dequeue_burst(ring->out, (void**)tx_bufs, BURST_SIZE, NULL);
+    		if (nb_tx > 0) {
+    			rte_eth_tx_burst(port, 0, tx_bufs, nb_tx);
 
-			uint16_t i;
-			for (i = 0; i < nb_rx; i++) {
-				rte_pktmbuf_free(bufs[i]);
-			}
+    			uint16_t i = 0;
+    			for (i = 0;i < nb_tx;i ++) {
+    				rte_pktmbuf_free(tx_bufs[i]);
+    			}
+
+    		}
 
 		}
 
@@ -772,9 +794,7 @@ mynet_main(void)
  * The main function, which does initialization and calls the per-lcore
  * functions.
  */
-int
-main(int argc, char *argv[])
-{
+int main(int argc, char *argv[]) {
 	unsigned nb_ports;
 	uint16_t portid;
 
@@ -813,8 +833,8 @@ main(int argc, char *argv[])
     }
 	/* >8 End of initializing all ports. */
 
-	if (rte_lcore_count() > 1) {
-		printf("\nWARNING: Too many lcores enabled. Only 1 used.\n");
+	if (rte_lcore_count() < 2) {
+		rte_exit(EXIT_FAILURE, "\nWARNING: lack lcores, at least 2 needed.\n");
     }
 
     /* arp table start */
@@ -828,9 +848,30 @@ main(int argc, char *argv[])
 	rte_timer_reset(&arp_timer, hz, PERIODICAL, lcore_id, arp_request_cb, NULL);
     /* arp table end */
 
+    /*ring init*/
+    struct inout_ring *ring = inout_ring_instance();
+	if (ring == NULL) {
+		rte_exit(EXIT_FAILURE, "ring buffer init failed\n");
+	}
+
+	if (ring->in == NULL) {
+		ring->in = rte_ring_create("in_ring", RING_SIZE, rte_socket_id(), RING_F_SP_ENQ | RING_F_SC_DEQ);
+	}
+	if (ring->out == NULL) {
+		ring->out = rte_ring_create("out_ring", RING_SIZE, rte_socket_id(), RING_F_SP_ENQ | RING_F_SC_DEQ);
+	}
+    /* end of init ring*/
+
+    rte_eal_remote_launch(work_main, NULL, rte_get_next_lcore(lcore_id, 1, 0));
+
 	/* Call lcore_main on the main core only. Called on single lcore. 8< */
 	mynet_main();
 	/* >8 End of called on single lcore. */
+
+    RTE_LCORE_FOREACH_WORKER(lcore_id) {
+		if (rte_eal_wait_lcore(lcore_id) < 0)
+			return -1;
+	}
 
 	/* clean up the EAL */
 	rte_eal_cleanup();

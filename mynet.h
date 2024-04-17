@@ -30,6 +30,8 @@
 #define NUM_MBUFS 8191
 #define MBUF_CACHE_SIZE 250
 #define BURST_SIZE 32
+#define RING_SIZE	1024
+
 
 #define SEND_UDP 1
 #define SEND_ARP 1
