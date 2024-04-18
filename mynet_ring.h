@@ -2,7 +2,7 @@
 
 
 
-#ifndef  __MYNET_RING_H__
+#ifndef __MYNET_RING_H__
 #define __MYNET_RING_H__
 
 #include <rte_mbuf.h>

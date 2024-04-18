@@ -5,7 +5,7 @@
 APP = mynet
 
 # all source are stored in SRCS-y
-SRCS-y := mynet.c
+SRCS-y := mynet.c mynet_socket.c
 
 PKGCONF ?= pkg-config
 

@@ -21,23 +21,36 @@
 #include <rte_malloc.h>
 #include <rte_timer.h>
 
-
 #define MAKE_IPV4_ADDR(a, b, c, d) (a + (b<<8) + (c<<16) + (d<<24))
+
+#define LL_ADD(item, list) do {		            \
+	item->prev = NULL;				            \
+	item->next = list;				            \
+	if (list != NULL) list->prev = item;        \
+	list = item;					            \
+} while(0)
+
+
+#define LL_REMOVE(item, list) do {		                    \
+	if (item->prev != NULL) item->prev->next = item->next;	\
+	if (item->next != NULL) item->next->prev = item->prev;	\
+	if (list == item) list = item->next;	                \
+	item->prev = item->next = NULL;			                \
+} while(0)
 
 #define RX_RING_SIZE 1024
 #define TX_RING_SIZE 1024
-
 #define NUM_MBUFS 8191
 #define MBUF_CACHE_SIZE 250
 #define BURST_SIZE 32
 #define RING_SIZE	1024
+#define TIMER_RESOLUTION_CYCLES 1200000000000ULL // 10ms * 1000 = 10s * 6
 
+#define MYNET_DEBUG 1
 
-#define SEND_UDP 1
-#define SEND_ARP 1
-#define SEND_ICMP 1
-
-#define TIMER_RESOLUTION_CYCLES 120000000000ULL // 10ms * 1000 = 10s * 6
+extern struct rte_mempool *g_mbuf_pool;
+extern uint32_t g_local_addr;
+extern struct rte_ether_addr g_local_mac;
 
 
 struct ethhdr_info{
@@ -51,6 +64,7 @@ struct arphdr_info{
     uint32_t arp_tip;
     uint16_t arp_opcode;
 };
+
 
 struct ip4hdr_info {
 
@@ -70,11 +84,11 @@ struct icmphdr_info {
     uint16_t icmp_len;
 };
 
+
 struct udphdr_info {
 
     uint16_t src_port;
     uint16_t dst_port;
-    uint16_t dgram_len;
     uint8_t *data;
     uint16_t data_len;
 };
@@ -88,7 +102,22 @@ struct tcphdr_info {
     uint16_t data_len;
 };
 
+int encap_pkt_ethhdr(struct rte_mbuf *new_buf, struct ethhdr_info *ethinfo);
 
+
+int encap_pkt_arphdr(struct rte_mbuf *new_buf, struct arphdr_info *arpinfo);
+
+
+int encap_pkt_ip4hdr(struct rte_mbuf *new_buf, struct ip4hdr_info *ip4info);
+
+
+int encap_pkt_udphdr(struct rte_mbuf *new_buf, struct udphdr_info *udpinfo);
+
+
+int encap_pkt_tcpphdr(struct rte_mbuf *new_buf, struct tcphdr_info *tcpinfo);
+
+
+int encap_pkt_icmphdr(struct rte_mbuf *new_buf, struct icmphdr_info *icmpinfo);
 
 
 #endif  //  __MYNET_H__
