@@ -10,9 +10,10 @@
 #include <stdio.h>
 
 
-#define BUFFER_SIZE 2048
+#define BUFFER_SIZE 1024
+#define DEFAULT_FD_NUM 3
 #define MAX_FD_NUM 103
-#define BIND_ADDR "10.66.24.22"
+#define BIND_ADDR "192.168.1.22"
 #define BIND_PORT 8888
 
 #include <pthread.h>
@@ -24,18 +25,18 @@
 #include <rte_ether.h>
 
 
-struct localhost { //
+struct udp_dgram { //
 
 	int fd;
 
 	uint32_t localip;
-	uint16_t localport;
+    uint16_t localport;
 
 	struct rte_ring *sendbuf;
 	struct rte_ring *recvbuf;
 
-	struct localhost *prev; //
-	struct localhost *next;
+	struct udp_socket *prev; //
+	struct udp_socket *next;
 
 	pthread_cond_t cond;
 	pthread_mutex_t mutex;
@@ -43,12 +44,12 @@ struct localhost { //
 };
 
 
-struct tcpstream { // tcb control block
+struct tcp_stream { // tcb control block
 
-	int fd; //
+	int fd;
 
-	uint32_t sip;
     uint32_t dip;
+	uint32_t sip;
 
 	uint16_t sport;
     uint16_t dport;
@@ -61,16 +62,17 @@ struct tcpstream { // tcb control block
 	struct rte_ring *sendbuf;
 	struct rte_ring *recvbuf;
 
-	struct tcp_stream *prev;
-	struct tcp_stream *next;
+	struct tcp_item *prev;
+	struct tcp_item *next;
 
 	pthread_cond_t cond;
 	pthread_mutex_t mutex;
 
 };
 
-extern struct localhost *g_hosts;
-extern struct tcpstream *g_streams;
+
+extern struct udp_dgram *g_dgrams;
+extern struct tcp_stream *g_streams;
 
 
 typedef enum TCP_STATUS {
@@ -92,14 +94,13 @@ typedef enum TCP_STATUS {
 } TCP_STATUS;
 
 
+struct udp_dgram *mynet_getdgram_from_fd(int sockfd);
 
-struct localhost *mynet_gethost_from_fd(int sockfd);
+struct udp_dgram *mynet_getdgram_from_ipport(uint32_t ip, uint16_t port);
 
-struct localhost *mynet_gethost_from_ipport(uint32_t ip, uint16_t port);
+struct tcp_stream *mynet_getstream_from_fd(int sockfd);
 
-struct tcpstream *mynet_getstream_from_fd(int sockfd);
-
-struct tcpstream *mynet_getstream_from_ipport(uint32_t sip, uint32_t dip,
+struct tcp_stream *mynet_getstream_from_ipport(uint32_t sip, uint32_t dip,
                                                            uint16_t sport, uint16_t dport);
 
 int mynet_socket(__attribute__((unused))int domain, int type, int protocol);
@@ -117,7 +118,7 @@ ssize_t mynet_recvfrom(int sockfd, void *buf, size_t len, __attribute__((unused)
 ssize_t mynet_recv(int sockfd, void *buf, size_t len, __attribute__((unused))int flags);
 
 ssize_t mynet_sendto(int sockfd, const void *buf, size_t len, int flags,
-                            const struct sockaddr *dest_addr, socklen_t addrlen);
+                            const struct sockaddr *dest_addr, __attribute__((unused))socklen_t addrlen);
 
 ssize_t mynet_send(int sockfd, const void *buf, size_t len, __attribute__((unused))int flags);
 

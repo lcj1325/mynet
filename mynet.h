@@ -21,6 +21,9 @@
 #include <rte_malloc.h>
 #include <rte_timer.h>
 
+#define mynet_debug(format, args...) printf("[ Core %u %s:%d ==> " format " ]\n", \
+                                            rte_lcore_id(), __FUNCTION__, __LINE__,  args)
+
 #define MAKE_IPV4_ADDR(a, b, c, d) (a + (b<<8) + (c<<16) + (d<<24))
 
 #define LL_ADD(item, list) do {		            \
@@ -124,6 +127,21 @@ int encap_pkt_tcphdr(struct rte_mbuf *new_buf, struct tcphdr_info *tcpinfo);
 
 
 int encap_pkt_icmphdr(struct rte_mbuf *new_buf, struct icmphdr_info *icmpinfo);
+
+
+struct rte_mbuf *encap_arp_request_pkt(uint32_t dstip);
+
+
+struct rte_mbuf *encap_arp_reply_pkt(struct rte_mbuf *buf);
+
+
+struct rte_mbuf *encap_icmp_reply_pkt(struct rte_mbuf *buf) {
+
+
+struct rte_mbuf *encap_tcp_synack_pkt(struct tcp_stream *new_stream);
+
+
+struct rte_mbuf *encap_tcp_ack_pkt(struct rte_mbuf *new_buf, struct tcphdr_info *tcpinfo);
 
 
 #endif  //  __MYNET_H__

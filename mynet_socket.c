@@ -8,8 +8,9 @@
 #include "mynet.h"
 
 
-int g_socket_fd = 3;
-struct localhost *g_hosts = NULL;
+static int g_socket_fd = DEFAULT_FD_NUM;
+
+struct udp_dgram *g_dgrams = NULL;
 struct tcp_stream *g_streams = NULL;
 
 
@@ -23,24 +24,41 @@ static inline int mynet_getfd() {
     return fd;
 }
 
-struct localhost *mynet_gethost_from_fd(int sockfd) {
+struct udp_dgram *mynet_getdgram_from_fd(int sockfd) {
 
-    struct localhost *host;
-    for (host = g_hosts; host != NULL; host = host->next) {
+    struct udp_dgram *dgram;
+    for (dgram = g_udptable; dgram != NULL; dgram = dgram->next) {
 
-		if (sockfd == host->fd) {
-			return host;
+		if (sockfd == dgram->fd) {
+			return dgram;
 		}
 
 	}
 
+    mynet_debug("get dgram nil");
     return NULL;
 }
 
-struct tcpstream *mynet_getstream_from_fd(int sockfd) {
+struct udp_dgram *mynet_getdgram_from_ipport(uint32_t ip, uint16_t port) {
 
-    struct tcpstream *stream;
-    for (stream = g_streams; stream != NULL; stream = stream->next) {
+    struct udp_dgram *dgram;
+    for (dgram = g_udptable; dgram != NULL; dgram = dgram->next) {
+
+		if (ip == dgram->localip && port == dgram->localport) {
+			return dgram;
+		}
+
+	}
+
+    mynet_debug("get dgram nil");
+    return NULL;
+}
+
+
+struct tcp_stream *mynet_getstream_from_fd(int sockfd) {
+
+    struct tcp_stream *stream;
+    for (stream = g_tcptable; stream != NULL; stream = stream->next) {
 
 		if (sockfd == stream->fd) {
 			return stream;
@@ -48,95 +66,97 @@ struct tcpstream *mynet_getstream_from_fd(int sockfd) {
 
 	}
 
+    mynet_debug("get stream nil");
     return NULL;
 
 }
 
 
-struct tcpstream *mynet_getstream_from_ipport(uint32_t sip, uint32_t dip,
+struct tcp_stream *mynet_getstream_from_ipport(uint32_t sip, uint32_t dip,
                                                            uint16_t sport, uint16_t dport) {
 
-	struct tcpstream *iter;
-	for (iter = g_streams; iter != NULL; iter = iter->next) { // established
+	struct tcp_stream *stream;
+	for (stream = g_tcptable; stream != NULL; stream = stream->next) { // client
 
-		if (iter->sip == sip && iter->dip == dip &&
-			iter->sport == sport && iter->dport == dport) {
-			return iter;
+		if (stream->sip == sip && stream->dip == dip &&
+			stream->sport == sport && stream->dport == dport) {
+			return stream;
 		}
 
 	}
 
-	for (iter = g_streams; iter != NULL; iter = iter->next) {
+	for (stream = g_tcptable; stream != NULL; stream = stream->next) {
 
-		if (iter->status == TCP_STATUS_LISTEN && iter->dip == dip && iter->dport == dport) { // listen
-			return iter;
+		if (stream->status == TCP_STATUS_LISTEN && stream->dip == dip && stream->dport == dport) { // server
+			return stream;
 		}
 
 	}
 
+    mynet_debug("get stream nil");
 	return NULL;
 
 }
 
-static inline struct localhost *host_create(int fd) {
+static inline struct udp_dgram *dgram_create(int fd) {
 
-    struct localhost *host = rte_malloc("HOST", sizeof(struct localhost), 0);
-    if (host == NULL) {
+    struct udp_dgram *dgram = rte_malloc("DGRAM", sizeof(struct udp_dgram), 0);
+    if (dgram == NULL) {
+        mynet_debug("rte_malloc dgram error.");
         return NULL;
     }
 
-    memset(host, 0, sizeof(struct localhost));
+    memset(dgram, 0, sizeof(struct udp_dgram));
 
-    host->fd = fd;
+    dgram->fd = fd;
 
-    host->recvbuf = rte_ring_create("recv buffer", RING_SIZE, rte_socket_id(), RING_F_SP_ENQ | RING_F_SC_DEQ);
-    if (host->recvbuf == NULL) {
-
-        rte_free(host);
+    dgram->recvbuf = rte_ring_create("RECV_BUF", RING_SIZE, rte_socket_id(), RING_F_SP_ENQ | RING_F_SC_DEQ);
+    if (dgram->recvbuf == NULL) {
+        mynet_debug("rte_ring_create dgram recv ring error.");
+        rte_free(dgram);
         return NULL;
     }
 
-    host->sendbuf = rte_ring_create("send buffer", RING_SIZE, rte_socket_id(), RING_F_SP_ENQ | RING_F_SC_DEQ);
-    if (host->sendbuf == NULL) {
-
-        rte_ring_free(host->recvbuf);
-
-        rte_free(host);
+    dgram->sendbuf = rte_ring_create("SEND_BUF", RING_SIZE, rte_socket_id(), RING_F_SP_ENQ | RING_F_SC_DEQ);
+    if (dgram->sendbuf == NULL) {
+        mynet_debug("rte_ring_create dgram send ring error.");
+        rte_ring_free(dgram->recvbuf);
+        rte_free(dgram);
         return NULL;
     }
 
     pthread_cond_t blank_cond = PTHREAD_COND_INITIALIZER;
-    rte_memcpy(&host->cond, &blank_cond, sizeof(pthread_cond_t));
+    rte_memcpy(&dgram->cond, &blank_cond, sizeof(pthread_cond_t));
 
     pthread_mutex_t blank_mutex = PTHREAD_MUTEX_INITIALIZER;
-    rte_memcpy(&host->mutex, &blank_mutex, sizeof(pthread_mutex_t));
+    rte_memcpy(&dgram->mutex, &blank_mutex, sizeof(pthread_mutex_t));
 
-    return host;
+    return dgram;
 }
 
-static struct tcpstream *stream_create(int fd){
+static struct tcp_stream *stream_create(int fd){
 
-    struct tcpstream *stream = rte_malloc("STREAM", sizeof(struct tcpstream), 0);
+    struct tcp_stream *stream = rte_malloc("STREAM", sizeof(struct tcp_stream), 0);
     if (stream == NULL) {
+        mynet_debug("rte_malloc stream error.");
         return NULL;
     }
 
-    memset(stream, 0, sizeof(struct tcpstream));
+    memset(stream, 0, sizeof(struct tcp_stream));
 
     stream->fd = fd;
 
-    stream->recvbuf = rte_ring_create("recv buffer", RING_SIZE, rte_socket_id(), RING_F_SP_ENQ | RING_F_SC_DEQ);
-    if (host->recvbuf == NULL) {
-
+    stream->recvbuf = rte_ring_create("RECV_BUF", RING_SIZE, rte_socket_id(), RING_F_SP_ENQ | RING_F_SC_DEQ);
+    if (stream->recvbuf == NULL) {
+        mynet_debug("rte_ring_create stream recv ring error.");
         rte_free(stream);
         return NULL;
     }
 
-    stream->sendbuf = rte_ring_create("send buffer", RING_SIZE, rte_socket_id(), RING_F_SP_ENQ | RING_F_SC_DEQ);
-    if (host->sendbuf == NULL) {
-
+    stream->sendbuf = rte_ring_create("SEND_BUF", RING_SIZE, rte_socket_id(), RING_F_SP_ENQ | RING_F_SC_DEQ);
+    if (stream->sendbuf == NULL) {
+        mynet_debug("rte_ring_create stream send ring error.");
         rte_ring_free(stream->recvbuf);
-
         rte_free(stream);
         return NULL;
     }
@@ -151,8 +171,7 @@ static struct tcpstream *stream_create(int fd){
 
 }
 
-
-int mynet_socket(__attribute__((unused)) int domain, int type, int protocol) {
+int mynet_socket(__attribute__((unused))int domain, int type, int protocol) {
 
     int fd = mynet_getfd();
     if (fd < 0) {
@@ -161,22 +180,22 @@ int mynet_socket(__attribute__((unused)) int domain, int type, int protocol) {
 
     if (type == SOCK_DGRAM) {
 
-        struct localhost *host = host_create(fd);
-        if (host == NULL) {
+        struct udp_dgram *dgram = dgram_create(fd);
+        if (dgram == NULL) {
             return -1;
         }
-        LL_ADD(host, g_hosts);
+        LL_ADD(dgram, g_dgrams);
     }
     else if (type == SOCK_STREAM) {
 
-        struct tcpstream *stream = stream_create(fd);
+        struct tcp_stream *stream = stream_create(fd);
         if (stream == NULL) {
             return -1;
         }
         LL_ADD(stream, g_streams);
-
     }
     else {
+
         return -1;
     }
 
@@ -186,13 +205,13 @@ int mynet_socket(__attribute__((unused)) int domain, int type, int protocol) {
 
 int mynet_bind(int sockfd, const struct sockaddr *addr , __attribute__((unused))socklen_t addrlen) {
 
-	struct localhost *host =  mynet_gethost_from_fd(sockfd);
-    struct tcpstream *stream =  mynet_getstream_from_fd(sockfd);
+	struct udp_dgram *dgram =  mynet_getdgram_from_fd(sockfd);
+    struct tcp_stream *stream =  mynet_getstream_from_fd(sockfd);
     const struct sockaddr_in *laddr = (const struct sockaddr_in *)addr;
 
-	if (host != NULL) {
-        host->localport = laddr->sin_port;
-	    rte_memcpy(&host->localip, &laddr->sin_addr.s_addr, sizeof(uint32_t));
+	if (dgram != NULL) {
+        dgram->localport = laddr->sin_port;
+	    rte_memcpy(&dgram->localip, &laddr->sin_addr.s_addr, sizeof(uint32_t));
     }
     else if (stream != NULL) {
         stream->dport = laddr->sin_port;
@@ -200,7 +219,6 @@ int mynet_bind(int sockfd, const struct sockaddr *addr , __attribute__((unused))
         stream->status = TCP_STATUS_CLOSED
     }
     else {
-        printf("[ %s ==> bind addr error. ]", __FUNCTION__);
         return -1;
     }
 
@@ -210,9 +228,10 @@ int mynet_bind(int sockfd, const struct sockaddr *addr , __attribute__((unused))
 
 int mynet_listen(int sockfd, __attribute__((unused))int backlog) {
 
-	struct tcpstream *stream =  mynet_getstream_from_fd(sockfd);
-
-	if (stream == NULL) return -1;
+	struct tcp_stream *stream =  mynet_getstream_from_fd(sockfd);
+	if (stream == NULL) {
+        return -1;
+    }
 
     stream->status = TCP_STATUS_LISTEN;
 
@@ -220,26 +239,26 @@ int mynet_listen(int sockfd, __attribute__((unused))int backlog) {
 
 }
 
-static struct tcpstream *accept_get_new_stream(uint32_t dip, uint16_t dport){
+static inline struct tcp_stream *accept_get_new_stream(uint32_t dip, uint16_t dport){
 
-    struct tcpstream *stream;
-    for (stream = g_streams; stream != NULL; stream = apt->next) {
+    struct tcp_stream *stream;
+    for (stream = g_streams; stream != NULL; stream = stream->next) {
         if (stream->fd == -1 && stream->dip == dip && stream->dport == dport) {
             return stream;
         }
     }
 
     return NULL;
-
 }
 
 int mynet_accept(int sockfd, struct sockaddr *addr, __attribute__((unused))socklen_t *addrlen) {
 
-	struct tcpstream *stream =  mynet_getstream_from_fd(sockfd);
+	struct tcp_stream *stream =  mynet_getstream_from_fd(sockfd);
+	if (stream == NULL) {
+        return -1;
+    }
 
-	if (stream == NULL) return -1;
-
-	struct tcpstream *new_stream = NULL;
+	struct tcp_stream *new_stream;
 
 	pthread_mutex_lock(&stream->mutex);
 	while((new_stream = accept_get_new_stream(stream->dip, stream->dport)) == NULL) {
@@ -247,9 +266,14 @@ int mynet_accept(int sockfd, struct sockaddr *addr, __attribute__((unused))sockl
 	}
 	pthread_mutex_unlock(&stream->mutex);
 
-	new_stream->fd = mynet_getfd();
+    int fd = mynet_getfd();
+    if (fd < 0) {
+        return -1;
+    }
 
-    // 填充 客户端 ip 和 port
+	new_stream->fd = fd;
+
+    // 填充客户端 ip 和 port
 	struct sockaddr_in *saddr = (struct sockaddr_in *)addr;
 	saddr->sin_port = new_stream->sport;
 	rte_memcpy(&saddr->sin_addr.s_addr, &new_stream->sip, sizeof(uint32_t));
@@ -260,26 +284,26 @@ int mynet_accept(int sockfd, struct sockaddr *addr, __attribute__((unused))sockl
 
 
 ssize_t mynet_recvfrom(int sockfd, void *buf, size_t len, __attribute__((unused))int flags,
-        struct sockaddr *src_addr, __attribute__((unused))socklen_t *addrlen) {
+                            struct sockaddr *src_addr, __attribute__((unused))socklen_t *addrlen) {
 
-    struct localhost *host =  mynet_gethost_from_fd(sockfd);
-    if (host == NULL) return -1;
+    struct udp_dgram *dgram =  mynet_getdgram_from_fd(sockfd);
+    if (dgram == NULL) {
+        return -1;
+    }
 
     struct rte_mbuf *rx_buf = NULL;
-
     struct sockaddr_in *saddr = (struct sockaddr_in *)src_addr;
 
     int nb = -1;
-    pthread_mutex_lock(&host->mutex);
-    while ((nb = rte_ring_mc_dequeue(host->recvbuf, (void **)&rx_buf)) < 0) {
-        pthread_cond_wait(&host->cond, &host->mutex);
+    pthread_mutex_lock(&dgram->mutex);
+    while ((nb = rte_ring_mc_dequeue(dgram->recvbuf, (void **)&rx_buf)) < 0) {
+        pthread_cond_wait(&dgram->cond, &dgram->mutex);
     }
-    pthread_mutex_unlock(&host->mutex);
+    pthread_mutex_unlock(&dgram->mutex);
 
     if (rx_buf == NULL) {
         return -1;
     }
-
 
     struct rte_ether_hdr *eth =  rte_pktmbuf_mtod(rx_buf, struct rte_ether_hdr *);
     struct rte_ipv4_hdr *ip4 =  (struct rte_ipv4_hdr *)(eth + 1);
@@ -292,7 +316,6 @@ ssize_t mynet_recvfrom(int sockfd, void *buf, size_t len, __attribute__((unused)
     rte_memcpy(&saddr->sin_addr.s_addr, &ip4->src_addr, sizeof(uint32_t));
 
     if (len < data_len) {
-
         rte_memcpy(buf, data, len);
 
         // rte_memcpy(data, data + len, data_len - len);
@@ -303,7 +326,7 @@ ssize_t mynet_recvfrom(int sockfd, void *buf, size_t len, __attribute__((unused)
 
         udp->dgram_len = rte_cpu_to_be_16(data_len - len + sizeof(struct rte_udp_hdr));
 
-        rte_ring_mp_enqueue(host->recvbuf, rx_buf);
+        rte_ring_mp_enqueue(dgram->recvbuf, rx_buf);
 
         return len;
 
@@ -321,9 +344,8 @@ ssize_t mynet_recvfrom(int sockfd, void *buf, size_t len, __attribute__((unused)
 
 ssize_t mynet_recv(int sockfd, void *buf, size_t len, __attribute__((unused))int flags) {
 
-    struct tcpstream *stream =  mynet_getstream_from_fd(sockfd);
+    struct tcp_stream *stream =  mynet_getstream_from_fd(sockfd);
     if (stream == NULL) {
-        printf("[ %s ==> stream nil]", __FUNCTION__);
         return -1;
     }
 
@@ -343,10 +365,11 @@ ssize_t mynet_recv(int sockfd, void *buf, size_t len, __attribute__((unused))int
     struct rte_ether_hdr *eth =  rte_pktmbuf_mtod(rx_buf, struct rte_ether_hdr *);
     struct rte_ipv4_hdr *ip4 =  (struct rte_ipv4_hdr *)(eth + 1);
 	struct rte_tcp_hdr *tcp = (struct rte_tcp_hdr *)(ip4 + 1);
-
     uint16_t ip4_len = rte_be_to_cpu_16(ip4->total_length);
+    uint16_t tcp_len = ip4_len - sizeof(struct rte_ipv4_hdr);
     uint8_t *data = (uint8_t *)(tcp + 1);
-    uint16_t data_len = ip4_len - sizeof(struct rte_ipv4_hdr) - sizeof(struct rte_tcp_hdr);
+    uint8_t tcphdr_len = tcp->data_off >> 4;
+    uint16_t data_len = tcp_len - tcphdr_len * 4;
 
     saddr->sin_port = tcp->src_port;
     rte_memcpy(&saddr->sin_addr.s_addr, &ip4->src_addr, sizeof(uint32_t));
@@ -361,7 +384,7 @@ ssize_t mynet_recv(int sockfd, void *buf, size_t len, __attribute__((unused))int
             data[i] = data[i + len];
         }
 
-        ip4->total_length = rte_cpu_to_be_16(data_len - len + sizeof(struct rte_tcp_hdr)
+        ip4->total_length = rte_cpu_to_be_16(data_len - len + tcphdr_len * 4
                                                 + sizeof(struct rte_ipv4_hdr));
 
         rte_ring_mp_enqueue(stream->recvbuf, rx_buf);
@@ -381,19 +404,18 @@ ssize_t mynet_recv(int sockfd, void *buf, size_t len, __attribute__((unused))int
 
 
 ssize_t mynet_sendto(int sockfd, const void *buf, size_t len, int flags,
-                              const struct sockaddr *dest_addr, socklen_t addrlen) {
+                     const struct sockaddr *dest_addr, __attribute__((unused))socklen_t addrlen) {
 
-    struct localhost *host =  mynet_gethost_from_fd(sockfd);
-    if (host == NULL) return -1;
+    struct udp_dgram *dgram =  mynet_getdgram_from_fd(sockfd);
+    if (dgram == NULL) {
+        return -1;
+    }
 
     const struct sockaddr_in *daddr = (const struct sockaddr_in *)dest_addr;
 
-    struct rte_mbuf *new_buf = rte_pktmbuf_alloc(g_mbuf_pool);
-    if (new_buf == NULL) {
-
-        if (MYNET_DEBUG) {
-            printf("[ test ==> rte_pktmbuf_alloc udp send buf error. ]\n");
-        }
+    struct rte_mbuf *udpbuf = rte_pktmbuf_alloc(g_mbuf_pool);
+    if (udpbuf == NULL) {
+        mynet_debug("rte_pktmbuf_alloc udp send buf error.");
         return -1;
     }
 
@@ -401,35 +423,34 @@ ssize_t mynet_sendto(int sockfd, const void *buf, size_t len, int flags,
     uint16_t ip4_len = udp_len + sizeof(struct rte_ipv4_hdr);
     uint16_t eth_len = ip4_len + sizeof(struct rte_ether_hdr);
 
-	new_buf->pkt_len = eth_len;
-	new_buf->data_len = eth_len;
+	udpbuf->pkt_len = eth_len;
+	udpbuf->data_len = eth_len;
 
-    // eth
-    // sokcet do it
+    // encap eth
+    // mynet_main do it
 
-    // ip4
+    // encap ip4
     struct ip4hdr_info ip4info;
-    memset(&ip4info, 0, sizeof(ip4info));
 
     rte_memcpy(&ip4info.dst_addr, &daddr->sin_addr.s_addr, sizeof(uint32_t));
     ip4info.next_proto_id = IPPROTO_UDP;
     ip4info.total_length = rte_cpu_to_be_16(ip4_len);
 
-    encap_pkt_ip4hdr(new_buf, &ip4info);
+    encap_pkt_ip4hdr(udpbuf, &ip4info);
 
     // udp
     struct udphdr_info udpinfo;
     memset(&udpinfo, 0, sizeof(udpinfo));
 
-    udpinfo.src_port = host->localport;
+    udpinfo.src_port = dgram->localport;
     udpinfo.dst_port = daddr->sin_port;
     udpinfo.data = (uint8_t *)(buf);
     udpinfo.data_len = len;
 
-    encap_pkt_udphdr(new_buf, &udpinfo);
+    encap_pkt_udphdr(udpbuf, &udpinfo);
 
-
-    rte_ring_mp_enqueue(host->sendbuf, new_buf);
+    // enqueue
+    rte_ring_mp_enqueue(dgram->sendbuf, udpbuf);
 
     return len;
 
@@ -437,36 +458,35 @@ ssize_t mynet_sendto(int sockfd, const void *buf, size_t len, int flags,
 
 ssize_t mynet_send(int sockfd, const void *buf, size_t len, __attribute__((unused))int flags) {
 
-    struct tcpstream *stream =  mynet_getstream_from_fd(sockfd);
-    if (stream == NULL) return -1;
-
-    struct rte_mbuf *new_buf = rte_pktmbuf_alloc(g_mbuf_pool);
-    if (new_buf == NULL) {
-
-        if (MYNET_DEBUG) {
-            printf("[ %s ==> rte_pktmbuf_alloc tcp send buf error. ]\n", __FUNCTION__);
-        }
+    struct tcp_stream *stream =  mynet_getstream_from_fd(sockfd);
+    if (stream == NULL) {
         return -1;
     }
 
-    uint16_t ip4_len = len + sizeof(struct rte_tcp_hdr) + sizeof(struct rte_ipv4_hdr);
+    struct rte_mbuf *tcpbuf = rte_pktmbuf_alloc(g_mbuf_pool);
+    if (new_buf == NULL) {
+        mynet_debug("rte_pktmbuf_alloc tcp send buf error.");
+        return -1;
+    }
+
+    uint16_t tcp_len = len + sizeof(struct rte_tcp_hdr);
+    uint16_t ip4_len = tcp_len + sizeof(struct rte_ipv4_hdr);
     uint16_t eth_len = ip4_len + sizeof(struct rte_ether_hdr);
 
-    new_buf->pkt_len = eth_len;
-    new_buf->data_len = eth_len;
+    tcpbuf->pkt_len = eth_len;
+    tcpbuf->data_len = eth_len;
 
     // eth
-    // sokcet do it
+    // mynet_main do it
 
     // ip4
     struct ip4hdr_info ip4info;
-    memset(&ip4info, 0, sizeof(ip4info));
 
     ip4info.dst_addr = stream->sip;
     ip4info.next_proto_id = IPPROTO_TCP;
     ip4info.total_length = rte_cpu_to_be_16(ip4_len);
 
-    encap_pkt_ip4hdr(new_buf, &ip4info);
+    encap_pkt_ip4hdr(tcpbuf, &ip4info);
 
     // tcp
     struct tcphdr_info tcpinfo;
@@ -474,15 +494,15 @@ ssize_t mynet_send(int sockfd, const void *buf, size_t len, __attribute__((unuse
 
     tcpinfo.src_port = stream->dport;
     tcpinfo.dst_port = stream->sport;
-    tcpinfo.sent_seq = rte_cpu_to_be_32(stream->sent_seq);
+    tcpinfo.sent_seq = rte_cpu_to_be_32(stream->sent_seq + len);
 	tcpinfo.recv_ack = rte_cpu_to_be_32(stream->recv_ack);
 	tcpinfo.tcp_flags = RTE_TCP_ACK_FLAG | RTE_TCP_PSH_FLAG;
     tcpinfo.data = (uint8_t *)(buf);
     tcpinfo.data_len = len;
 
-    encap_pkt_tcphdr(new_buf, &tcpinfo);
+    encap_pkt_tcphdr(tcpbuf, &tcpinfo);
 
-    rte_ring_mp_enqueue(stream->sendbuf, new_buf);
+    rte_ring_mp_enqueue(stream->sendbuf, tcpbuf);
 
     return len;
 
@@ -490,26 +510,26 @@ ssize_t mynet_send(int sockfd, const void *buf, size_t len, __attribute__((unuse
 
 int mynet_close(int fd) {
 
-    struct localhost *host =  mynet_gethost_from_fd(fd);
-    if (host != NULL) {
+    struct udp_dgram *dgram =  mynet_getdgram_from_fd(fd);
+    if (dgram != NULL) {
 
-        LL_REMOVE(host, g_hosts);
+        LL_REMOVE(dgram, g_dgrams);
 
-        if (host->recvbuf) {
-            rte_ring_free(host->recvbuf);
-            host->recvbuf = NULL;
+        if (dgram->recvbuf) {
+            rte_ring_free(dgram->recvbuf);
+            dgram->recvbuf = NULL;
         }
 
-        if (host->sendbuf) {
-            rte_ring_free(host->sendbuf);
-            host->sendbuf = NULL;
+        if (dgram->sendbuf) {
+            rte_ring_free(dgram->sendbuf);
+            dgram->sendbuf = NULL;
         }
 
-        rte_free(host);
+        rte_free(dgram);
     }
 
 
-    struct tcpstream *stream =  mynet_getstream_from_fd(fd);
+    struct tcp_stream *stream =  mynet_getstream_from_fd(fd);
     if (stream != NULL) {
 
         LL_REMOVE(stream, g_streams);
@@ -541,7 +561,7 @@ int udp_server_main(__attribute__((unused))  void *arg) {
 
     // 创建UDP套接字
     if ((sockfd = mynet_socket(AF_INET, SOCK_DGRAM, 0)) < 0) {
-        rte_exit(EXIT_FAILURE, "socket creation failed.\n");
+        rte_exit(EXIT_FAILURE, "udp socket create failed.\n");
     }
 
     memset(&servaddr, 0, sizeof(servaddr));
@@ -554,23 +574,29 @@ int udp_server_main(__attribute__((unused))  void *arg) {
 
     // 将套接字绑定到服务器地址
     if (mynet_bind(sockfd, (const struct sockaddr *)&servaddr, sizeof(servaddr)) < 0) {
-        rte_exit(EXIT_FAILURE, "bind failed.\n");
+        rte_exit(EXIT_FAILURE, "udp socket bind failed.\n");
     }
 
     while (1) {
         // 接收数据
-        int n = mynet_recvfrom(sockfd, (char *)buffer, BUFFER_SIZE-1, MSG_WAITALL,
+        int n = mynet_recvfrom(sockfd, (char *)buffer, BUFFER_SIZE - 1, MSG_WAITALL,
                                 (struct sockaddr *)&cliaddr, &len);
+        if(n < 0) {
+            continue;
+        }
+
         buffer[n] = '\0';
 
-        printf("[ UDP Client : %s ]\n", buffer);
+        mynet_debug("UDP Client(%d) : %s", n, buffer);
 
         // 发送回应给客户端
-        mynet_sendto(sockfd, (const char *)buffer, strlen(buffer), MSG_CONFIRM,
+        n = mynet_sendto(sockfd, (const char *)buffer, strlen(buffer), MSG_CONFIRM,
                         (const struct sockaddr *)&cliaddr, len);
-        printf("[ UDP Message sent. ]\n");
+
+        mynet_debug("UDP Server(%d)", n);
     }
 
+    mynet_debug("UDP close(%d)", sockfd);
     mynet_close(sockfd);
 
     return 0;
@@ -579,15 +605,14 @@ int udp_server_main(__attribute__((unused))  void *arg) {
 
 int tcp_server_main(__attribute__((unused))  void *arg) {
 
-    int server_fd, new_socket;
+    int server_fd, client_fd;
     struct sockaddr_in server_addr, client_addr;
     int addrlen = sizeof(server_addr);
-    char buffer[BUFFER_SIZE] = {0};
+    char buffer[BUFFER_SIZE];
 
     // 创建socket
-    if ((server_fd = mynet_socket(AF_INET, SOCK_STREAM, 0)) == 0) {
-        perror("Socket creation failed");
-        exit(EXIT_FAILURE);
+    if ((server_fd = mynet_socket(AF_INET, SOCK_STREAM, 0)) < 0) {
+        rte_exit(EXIT_FAILURE, "tcp socket create failed.\n");
     }
 
     server_addr.sin_family = AF_INET;
@@ -597,48 +622,47 @@ int tcp_server_main(__attribute__((unused))  void *arg) {
 
     // 绑定地址和端口
     if (mynet_bind(server_fd, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
-        perror("Bind failed");
-        exit(EXIT_FAILURE);
+        rte_exit(EXIT_FAILURE, "tcp socket bind failed.\n");
     }
 
     // 监听
     if (mynet_listen(server_fd, 3) < 0) {
-        perror("Listen failed");
-        exit(EXIT_FAILURE);
+        rte_exit(EXIT_FAILURE, "tcp socket listen failed.\n");
     }
-
-    printf("Server listening on port %d\n", BIND_PORT);
 
     while (1) {
 
         // 接受连接请求
-        if ((new_socket = mynet_accept(server_fd, (struct sockaddr *)&client_addr, (socklen_t*)&addrlen)) < 0) {
-            perror("Accept failed");
-            exit(EXIT_FAILURE);
+        client_fd = mynet_accept(server_fd, (struct sockaddr *)&client_addr, (socklen_t*)&addrlen);
+        if (client_fd < 0) {
+            rte_exit(EXIT_FAILURE, "tcp socket accept failed.\n");
         }
 
         // 从客户端接收数据
-        int valread;
-        while ((valread = mynet_recv(new_socket, buffer, BUFFER_SIZE-1, 0)) > 0) {
+        int n;
+        while ((n = mynet_recv(client_fd, buffer, BUFFER_SIZE - 1, 0)) > 0) {
 
             buffer[n] = '\0';
 
-            printf("[ TCP Client : %s ]\n", buffer);
+            mynet_debug("TCP Client(%d) : %s", n, buffer);
 
             // 回复客户端
-            mynet_send(new_socket, buffer, strlen(buffer), 0);
-            printf("[ TCP Message sent. ]\n");
+            mynet_send(client_fd, buffer, strlen(buffer), 0);
+
+            mynet_debug("TCP Server(%d)", n);
         }
 
-        if (valread == 0) {
-            printf("[ TCP Client disconnected. ]\n");
+        if (n == 0) {
+            mynet_send("TCP Client disconnected.");
         } else {
-            perror("[ TCP Receive failed. ]\n");
+            mynet_send("TCP Receive failed.");
         }
 
-        mynet_close(new_socket);
+        mynet_debug("TCP close(%d)", client_fd);
+        mynet_close(client_fd);
     }
 
+    mynet_debug("TCP close(%d)", server_fd);
     mynet_close(server_fd);
 
     return 0;
