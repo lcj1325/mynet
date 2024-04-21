@@ -45,6 +45,9 @@
 #define BURST_SIZE 32
 #define RING_SIZE	1024
 #define TIMER_RESOLUTION_CYCLES 1200000000000ULL // 10ms * 1000 = 10s * 6
+#define TCP_MAX_SEQ		4294967295
+#define TCP_INITIAL_WINDOW  14600
+
 
 #define MYNET_DEBUG 1
 
@@ -98,6 +101,9 @@ struct tcphdr_info {
 
     uint16_t src_port;
     uint16_t dst_port;
+    uint32_t sent_seq;
+    uint32_t recv_ack;
+    uint8_t tcp_flags;
     uint8_t *data;
     uint16_t data_len;
 };
@@ -114,7 +120,7 @@ int encap_pkt_ip4hdr(struct rte_mbuf *new_buf, struct ip4hdr_info *ip4info);
 int encap_pkt_udphdr(struct rte_mbuf *new_buf, struct udphdr_info *udpinfo);
 
 
-int encap_pkt_tcpphdr(struct rte_mbuf *new_buf, struct tcphdr_info *tcpinfo);
+int encap_pkt_tcphdr(struct rte_mbuf *new_buf, struct tcphdr_info *tcpinfo);
 
 
 int encap_pkt_icmphdr(struct rte_mbuf *new_buf, struct icmphdr_info *icmpinfo);
