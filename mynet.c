@@ -618,13 +618,13 @@ static inline int tcp_listen_proc(struct tcp_stream *stream, struct rte_mbuf *bu
     struct rte_ipv4_hdr *ip4hdr = (struct rte_ipv4_hdr *)(ethhdr + 1);
     struct rte_tcp_hdr *tcphdr = (struct rte_tcp_hdr *)(ip4hdr + 1);
 
-    if (!(tcphdr->tcp_flags & RTE_TCP_SYN_FLAG))  {
-        mynet_debug("pkt not syn.");
+    if (stream->status != TCP_STATUS_LISTEN) {
+        mynet_debug("stream not listen.");
         return -1;
     }
 
-    if (stream->status != TCP_STATUS_LISTEN) {
-        mynet_debug("stream not listen.");
+    if (!(tcphdr->tcp_flags & RTE_TCP_SYN_FLAG))  {
+        mynet_debug("pkt not syn.");
         return -1;
     }
 
@@ -642,8 +642,7 @@ static inline int tcp_listen_proc(struct tcp_stream *stream, struct rte_mbuf *bu
     uint32_t next_seed = time(NULL);
     new_stream->sent_seq = rand_r(&next_seed) % TCP_MAX_SEQ;
 
-    new_stream->recv_ack = rte_be_to_cpu_32(tcphdr->recv_ack) + 1;
-
+    new_stream->recv_ack = rte_be_to_cpu_32(tcphdr->sent_seq) + 1;
     new_stream->status = TCP_STATUS_SYN_RCVD;
 
     LL_ADD(new_stream, g_streams);
@@ -666,22 +665,20 @@ static inline int tcp_syn_rcvd_proc(struct tcp_stream *stream, struct rte_mbuf *
     struct rte_ipv4_hdr *ip4hdr = (struct rte_ipv4_hdr *)(ethhdr + 1);
     struct rte_tcp_hdr *tcphdr = (struct rte_tcp_hdr *)(ip4hdr + 1);
 
+    if (stream->status != TCP_STATUS_SYN_RCVD) {
+        mynet_debug("stream not syn rcvd.");
+        return -1;
+    }
+
     if (!(tcphdr->tcp_flags & RTE_TCP_ACK_FLAG)) {
         mynet_debug("pkt not ack.");
         return -1;
 
     }
 
-    if (stream->status != TCP_STATUS_SYN_RCVD) {
-        mynet_debug("stream not syn rcvd.");
-        return -1;
+    if (stream->sent_seq + 1 != rte_be_to_cpu_32(tcphdr->recv_ack)) {
+        mynet_debug("stream->sent_seq=%d tcphdr->recv_ack=%d.");;
     }
-
-    uint32_t acknum = rte_be_to_cpu_32(tcphdr->recv_ack);
-    if (acknum != stream->sent_seq + 1) {
-        mynet_debug("seqnum not match acknum, acknum=%d seqnum=%d.", acknum, stream->sent_seq);
-    }
-
     stream->status = TCP_STATUS_ESTABLISHED;
 
     // accept
@@ -699,7 +696,7 @@ static inline int tcp_syn_rcvd_proc(struct tcp_stream *stream, struct rte_mbuf *
 
 }
 
-static inline int tcp_established_proc(struct tcpstream *stream, struct rte_mbuf *buf) {
+static inline int tcp_established_proc(struct tcp_stream *stream, struct rte_mbuf *buf) {
 
     struct rte_ether_hdr *ethhdr = rte_pktmbuf_mtod(buf, struct rte_ether_hdr *);
     struct rte_ipv4_hdr *ip4hdr = (struct rte_ipv4_hdr *)(ethhdr + 1);
@@ -711,68 +708,67 @@ static inline int tcp_established_proc(struct tcpstream *stream, struct rte_mbuf
     uint16_t data_len = tcp_len - tcphdr_len * 4;
 
     if (tcphdr->tcp_flags & RTE_TCP_SYN_FLAG) {
-		//
+		mynet_debug("syn nothing to do...");
+	}
+
+	if (tcphdr->tcp_flags & RTE_TCP_ACK_FLAG) {
+        // up seqnum ?
+	    stream->sent_seq = rte_be_to_cpu_32(tcphdr->recv_ack);
+        mynet_debug("ack nothing to do...");
+	}
+
+    if (tcphdr->tcp_flags & RTE_TCP_FIN_FLAG) {
+        // update acknum
+	    stream->recv_ack = rte_be_to_cpu_32(tcphdr->recv_ack);
+
+        rte_ring_mp_enqueue(stream->recvbuf, buf);
+
+        struct rte_mbuf *ackbuf = encap_tcp_ack_pkt(stream);
+        if (ackbuf != NULL) {
+            rte_ring_mp_enqueue(stream->sendbuf, ackbuf);
+        }
+
+        stream->status = TCP_STATUS_CLOSE_WAIT;
 	}
 
     if (tcphdr->tcp_flags & RTE_TCP_PSH_FLAG) {
+        // update acknum
+	    stream->recv_ack = stream->recv_ack + data_len;
 
-        // recv ring
+        // enqueue recv ring
         rte_ring_mp_enqueue(stream->recvbuf, buf);
 
         pthread_mutex_lock(&stream->mutex);
         pthread_cond_signal(&stream->cond);
         pthread_mutex_unlock(&stream->mutex);
 
-		stream->recv_ack = stream->recv_ack + data_len;
-		stream->sent_seq = rte_be_to_cpu_32(tcphdr->recv_ack);
-
-        // ack
+        // reply ack
         struct rte_mbuf *ackbuf = encap_tcp_ack_pkt(stream);
-
         if (ackbuf != NULL) {
             rte_ring_mp_enqueue(stream->sendbuf, ackbuf);
         }
     }
 
-	if (tcphdr->tcp_flags & RTE_TCP_ACK_FLAG) {
-        //
-	}
-
-    if (tcphdr->tcp_flags & RTE_TCP_FIN_FLAG) {
-
-        rte_ring_mp_enqueue(stream->recvbuf, buf);
-
-    	stream->recv_ack = stream->recv_ack + 1;
-		stream->sent_seq = rte_be_to_cpu_32(tcphdr->recv_ack);
-
-        struct rte_mbuf *ackbuf = encap_tcp_ack_pkt(stream);
-
-        if (ackbuf != NULL) {
-            rte_ring_mp_enqueue(stream->sendbuf, ackbuf);
-        }
-
-
-	}
-
 }
 
-static inline int tcp_close_wait_proc(struct tcpstream *stream, struct rte_mbuf *buf) {
+static inline int tcp_close_wait_proc(struct tcp_stream *stream, struct rte_mbuf *buf) {
 
+    mynet_debug("nothing to do...");
     return 0;
 }
 
-static inline int tcp_last_ack_proc(struct tcpstream *stream, struct rte_mbuf *buf) {
+static inline int tcp_last_ack_proc(struct tcp_stream *stream, struct rte_mbuf *buf) {
 
     struct rte_ether_hdr *ethhdr = rte_pktmbuf_mtod(buf, struct rte_ether_hdr *);
     struct rte_ipv4_hdr *ip4hdr = (struct rte_ipv4_hdr *)(ethhdr + 1);
     struct rte_tcp_hdr *tcphdr = (struct rte_tcp_hdr *)(ip4hdr + 1);
 
-    if (!(tcphdr->tcp_flags & RTE_TCP_ACK_FLAG)) {
+    if (stream->status != TCP_STATUS_LAST_ACK) {
 
         return -1;
     }
 
-    if (stream->status != TCP_STATUS_LAST_ACK) {
+    if (!(tcphdr->tcp_flags & RTE_TCP_ACK_FLAG)) {
 
         return -1;
     }
@@ -783,10 +779,12 @@ static inline int tcp_last_ack_proc(struct tcpstream *stream, struct rte_mbuf *b
 
     if (stream->sendbuf) {
         rte_ring_free(stream->sendbuf);
+        stream->sendbuf = NULL;
     }
 
     if (stream->recvbuf) {
         rte_ring_free(stream->recvbuf);
+        stream->sendbuf = NULL;
     }
 
     rte_free(stream);

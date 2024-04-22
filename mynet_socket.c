@@ -494,7 +494,7 @@ ssize_t mynet_send(int sockfd, const void *buf, size_t len, __attribute__((unuse
 
     tcpinfo.src_port = stream->dport;
     tcpinfo.dst_port = stream->sport;
-    tcpinfo.sent_seq = rte_cpu_to_be_32(stream->sent_seq + len);
+    tcpinfo.sent_seq = rte_cpu_to_be_32(stream->sent_seq);
 	tcpinfo.recv_ack = rte_cpu_to_be_32(stream->recv_ack);
 	tcpinfo.tcp_flags = RTE_TCP_ACK_FLAG | RTE_TCP_PSH_FLAG;
     tcpinfo.data = (uint8_t *)(buf);
@@ -532,19 +532,45 @@ int mynet_close(int fd) {
     struct tcp_stream *stream =  mynet_getstream_from_fd(fd);
     if (stream != NULL) {
 
-        LL_REMOVE(stream, g_streams);
-
-        if (stream->recvbuf) {
-            rte_ring_free(stream->recvbuf);
-            stream->recvbuf = NULL;
+        struct rte_mbuf *finbuf = rte_pktmbuf_alloc(g_mbuf_pool);
+        if (finbuf == NULL) {
+            mynet_debug("rte_pktmbuf_alloc tcp fin buf error.");
+            return -1;
         }
 
-        if (stream->sendbuf) {
-            rte_ring_free(stream->sendbuf);
-            stream->sendbuf = NULL;
-        }
+        uint16_t tcp_len = sizeof(struct rte_tcp_hdr);
+        uint16_t ip4_len = tcp_len + sizeof(struct rte_ipv4_hdr);
+        uint16_t eth_len = ip4_len + sizeof(struct rte_ether_hdr);
 
-        rte_free(stream);
+        finbuf->pkt_len = eth_len;
+        finbuf->data_len = eth_len;
+
+        // eth
+        // mynet_main do it
+
+        // ip4
+        struct ip4hdr_info ip4info;
+        ip4info.dst_addr = stream->sip;
+        ip4info.next_proto_id = IPPROTO_TCP;
+        ip4info.total_length = rte_cpu_to_be_16(ip4_len);
+
+        encap_pkt_ip4hdr(finbuf, &ip4info);
+
+        // tcp
+        struct tcphdr_info tcpinfo;
+        tcpinfo.src_port = stream->dport;
+        tcpinfo.dst_port = stream->sport;
+        tcpinfo.sent_seq = rte_cpu_to_be_32(stream->sent_seq);
+        tcpinfo.recv_ack = rte_cpu_to_be_32(stream->recv_ack);
+        tcpinfo.tcp_flags = RTE_TCP_FIN_FLAG | RTE_TCP_ACK_FLAG;
+        tcpinfo.data = NULL;
+        tcpinfo.data_len = 0;
+
+        encap_pkt_tcphdr(finbuf, &tcpinfo);
+
+        rte_ring_mp_enqueue(stream->sendbuf, finbuf);
+
+        stream->status = TCP_STATUS_LAST_ACK;
     }
 
 
