@@ -449,6 +449,8 @@ ssize_t mynet_sendto(int sockfd, const void *buf, size_t len, int flags,
     // enqueue
     rte_ring_mp_enqueue(dgram->sendbuf, udpbuf);
 
+    format_ipv4_udp_pkt(udpbuf, "send udp pkt");
+
     return len;
 
 }
@@ -500,6 +502,8 @@ ssize_t mynet_send(int sockfd, const void *buf, size_t len, __attribute__((unuse
     encap_pkt_tcphdr(tcpbuf, &tcpinfo);
 
     rte_ring_mp_enqueue(stream->sendbuf, tcpbuf);
+
+    format_ipv4_tcp_pkt(tcpbuf, "send tcp psh pkt");
 
     return len;
 
