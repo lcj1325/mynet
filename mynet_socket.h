@@ -13,7 +13,7 @@
 #define BUFFER_SIZE 1024
 #define DEFAULT_FD_NUM 3
 #define MAX_FD_NUM 103
-#define BIND_ADDR "192.168.1.22"
+#define BIND_ADDR "192.168.1.120"
 #define BIND_PORT 8888
 
 #include <pthread.h>
@@ -23,6 +23,25 @@
 #include <rte_lcore.h>
 #include <rte_mbuf.h>
 #include <rte_ether.h>
+
+
+typedef enum TCP_STATUS {
+
+	TCP_STATUS_CLOSED = 0,
+	TCP_STATUS_LISTEN,
+	TCP_STATUS_SYN_RCVD,
+	TCP_STATUS_SYN_SENT,
+	TCP_STATUS_ESTABLISHED,
+
+	TCP_STATUS_FIN_WAIT_1,
+	TCP_STATUS_FIN_WAIT_2,
+	TCP_STATUS_CLOSING,
+	TCP_STATUS_TIME_WAIT,
+
+	TCP_STATUS_CLOSE_WAIT,
+	TCP_STATUS_LAST_ACK
+
+} TCP_STATUS;
 
 
 struct udp_dgram { //
@@ -35,8 +54,8 @@ struct udp_dgram { //
 	struct rte_ring *sendbuf;
 	struct rte_ring *recvbuf;
 
-	struct udp_socket *prev; //
-	struct udp_socket *next;
+	struct udp_dgram *prev; //
+	struct udp_dgram *next;
 
 	pthread_cond_t cond;
 	pthread_mutex_t mutex;
@@ -62,8 +81,8 @@ struct tcp_stream { // tcb control block
 	struct rte_ring *sendbuf;
 	struct rte_ring *recvbuf;
 
-	struct tcp_item *prev;
-	struct tcp_item *next;
+	struct tcp_stream *prev;
+	struct tcp_stream *next;
 
 	pthread_cond_t cond;
 	pthread_mutex_t mutex;
@@ -75,25 +94,6 @@ extern struct udp_dgram *g_dgrams;
 extern struct tcp_stream *g_streams;
 
 
-typedef enum TCP_STATUS {
-
-	TCP_STATUS_CLOSED = 0,
-	TCP_STATUS_LISTEN,
-	TCP_STATUS_SYN_RCVD,
-	TCP_STATUS_SYN_SENT,
-	TCP_STATUS_ESTABLISHED,
-
-	TCP_STATUS_FIN_WAIT_1,
-	TCP_STATUS_FIN_WAIT_2,
-	TCP_STATUS_CLOSING,
-	TCP_STATUS_TIME_WAIT,
-
-	TCP_STATUS_CLOSE_WAIT,
-	TCP_STATUS_LAST_ACK
-
-} TCP_STATUS;
-
-
 struct udp_dgram *mynet_getdgram_from_fd(int sockfd);
 
 struct udp_dgram *mynet_getdgram_from_ipport(uint32_t ip, uint16_t port);
@@ -102,6 +102,11 @@ struct tcp_stream *mynet_getstream_from_fd(int sockfd);
 
 struct tcp_stream *mynet_getstream_from_ipport(uint32_t sip, uint32_t dip,
                                                            uint16_t sport, uint16_t dport);
+
+struct udp_dgram *mynet_create_dgram(int fd, const char *recvbuf, const char *sendbuf);
+
+struct tcp_stream *mynet_create_stream(int fd, const char *recvbuf, const char *sendbuf);
+
 
 int mynet_socket(__attribute__((unused))int domain, int type, int protocol);
 

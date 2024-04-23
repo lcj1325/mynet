@@ -9,16 +9,19 @@
 #include "mynet_socket.h"
 #include "mynet.h"
 
+
 struct rte_mempool *g_mbuf_pool;
-uint32_t g_local_addr = MAKE_IPV4_ADDR(10, 66, 24, 22);
+uint32_t g_local_addr = MAKE_IPV4_ADDR(192, 168, 1, 120);
 struct rte_ether_addr g_local_mac;
-uint8_t g_default_mac_0[RTE_ETHER_ADDR_LEN] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
-uint8_t g_default_mac_1[RTE_ETHER_ADDR_LEN] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+
+
+uint8_t DEFAULT_MAC_0[RTE_ETHER_ADDR_LEN] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+uint8_t DEFAULT_MAC_1[RTE_ETHER_ADDR_LEN] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 
 
 /* mynet.c */
 
-// 计算校验和的函数
+// 计算 icmp 校验和的函数
 static inline uint16_t mynet_icmp_checksum(void *addr, int len) {
     uint16_t *buf = (uint16_t *)addr;
     uint32_t sum = 0;
@@ -113,9 +116,9 @@ static inline int port_init(uint16_t port, struct rte_mempool *mbuf_pool)
 	if (retval != 0)
 		return retval;
 
-	printf("Port %u MAC: %02" PRIx8 " %02" PRIx8 " %02" PRIx8
-			   " %02" PRIx8 " %02" PRIx8 " %02" PRIx8 "\n",
-			port, RTE_ETHER_ADDR_BYTES(&g_local_mac));
+	mynet_debug("Port: %u, "
+	            "MAC: %02" PRIx8 " %02" PRIx8 " %02" PRIx8 " %02" PRIx8 " %02" PRIx8 " %02" PRIx8,
+			    port, RTE_ETHER_ADDR_BYTES(&g_local_mac));
 
 	/* Enable RX in promiscuous mode for the Ethernet device. */
 	retval = rte_eth_promiscuous_enable(port);
@@ -126,6 +129,7 @@ static inline int port_init(uint16_t port, struct rte_mempool *mbuf_pool)
 	return 0;
 }
 /* >8 End of main functional part of port initialization. */
+
 
 static inline void format_eth_hdr(struct rte_ether_hdr *ethhdr) {
 
@@ -138,6 +142,7 @@ static inline void format_eth_hdr(struct rte_ether_hdr *ethhdr) {
 			RTE_ETHER_ADDR_BYTES(&ethhdr->dst_addr));
 
 }
+
 
 static inline void format_arp_hdr(struct rte_arp_hdr *arphdr) {
 
@@ -157,6 +162,7 @@ static inline void format_arp_hdr(struct rte_arp_hdr *arphdr) {
     		RTE_ETHER_ADDR_BYTES(&arphdr->arp_data.arp_tha));
 }
 
+
 static inline void format_ip4_hdr(struct rte_ipv4_hdr *ip4hdr) {
 
 	struct in_addr addr;
@@ -168,31 +174,15 @@ static inline void format_ip4_hdr(struct rte_ipv4_hdr *ip4hdr) {
 
 }
 
+
 static inline void format_udp_hdr(struct rte_udp_hdr *udphdr) {
 
-    uint16_t length = ntohs(udphdr->dgram_len);
-    *((char*)udphdr + length) = '\0';
-
 	printf("[ %u -> %u ]\n", rte_be_to_cpu_16(udphdr->src_port), rte_be_to_cpu_16(udphdr->dst_port));
-	printf("[ length = %u, %s ]\n", rte_be_to_cpu_16(udphdr->dgram_len), (char *)(udphdr + 1));
 
 }
-struct rte_tcp_hdr {
-	rte_be16_t src_port; /**< TCP source port. */
-	rte_be16_t dst_port; /**< TCP destination port. */
-	rte_be32_t sent_seq; /**< TX data sequence number. */
-	rte_be32_t recv_ack; /**< RX data acknowledgment sequence number. */
-	uint8_t  data_off;   /**< Data offset. */
-	uint8_t  tcp_flags;  /**< TCP flags */
-	rte_be16_t rx_win;   /**< RX flow control window. */
-	rte_be16_t cksum;    /**< TCP checksum. */
-	rte_be16_t tcp_urp;  /**< TCP urgent pointer, if any. */
-} __rte_packed;
+
 
 static inline void format_tcp_hdr(struct rte_tcp_hdr *tcphdr) {
-
-    uint16_t length = ntohs(udphdr->dgram_len);
-    *((char*)udphdr + length) = '\0';
 
 	printf("[ %u -> %u, sent_seq=%u, recv_ack=%u ]\n",
             rte_be_to_cpu_16(tcphdr->src_port),
@@ -205,78 +195,73 @@ static inline void format_tcp_hdr(struct rte_tcp_hdr *tcphdr) {
 
 static inline void format_icmp_hdr(struct rte_icmp_hdr *icmphdr) {
 
-    printf("[ ident:%u, seq_nb:%u ]\n",
+    printf("[ ident=%u, seq_nb=%u ]\n",
             rte_be_to_cpu_16(icmphdr->icmp_ident),
             rte_be_to_cpu_16(icmphdr->icmp_seq_nb));
 }
 
-static inline void format_ipv4_tcp_pkt(struct rte_mbuf *buf, const char *msg) {
 
-    if (MYNET_DEBUG) {
+void format_ipv4_tcp_pkt(struct rte_mbuf *buf, const char *msg) {
 
-        struct rte_ether_hdr *ethhdr = rte_pktmbuf_mtod(buf, struct rte_ether_hdr*);
-        struct rte_ipv4_hdr *ip4hdr = (struct rte_ipv4_hdr *)(ethhdr + 1);
-        struct rte_tcp_hdr *tcphdr = (struct rte_tcp_hdr *)(ip4hdr + 1);
+    struct rte_ether_hdr *ethhdr = rte_pktmbuf_mtod(buf, struct rte_ether_hdr*);
+    struct rte_ipv4_hdr *ip4hdr = (struct rte_ipv4_hdr *)(ethhdr + 1);
+    struct rte_tcp_hdr *tcphdr = (struct rte_tcp_hdr *)(ip4hdr + 1);
 
-        printf("\n  %s:\n", msg);
-        format_eth_hdr(ethhdr);
-        format_ip4_hdr(ip4hdr);
-        format_tcp_hdr(tcphdr);
+    uint16_t ip4_len = rte_be_to_cpu_16(ip4hdr->total_length);
+    uint8_t tcphdr_len = tcphdr->data_off >> 4;
+    uint16_t data_len = ip4_len - sizeof(struct rte_ipv4_hdr) - tcphdr_len * 4;
 
-        printf("[ length = %u, %s ]\n",
-                rte_be_to_cpu_16(ip4hdr->total_length) - sizeof(struct rte_ipv4_hdr)- sizeof(struct rte_tcp_hdr),
-                (char *)(tcphdr + 1));
-    }
+    printf("\n  %s:\n", msg);
+    format_eth_hdr(ethhdr);
+    format_ip4_hdr(ip4hdr);
+    format_tcp_hdr(tcphdr);
+
+    // printf(" (%u) %s \n", data_len, (char *)(tcphdr + 1));
+
+}
+
+
+void format_ipv4_udp_pkt(struct rte_mbuf *buf, const char *msg) {
+
+    struct rte_ether_hdr *ethhdr = rte_pktmbuf_mtod(buf, struct rte_ether_hdr*);
+    struct rte_ipv4_hdr *ip4hdr = (struct rte_ipv4_hdr *)(ethhdr + 1);
+    struct rte_udp_hdr *udphdr = (struct rte_udp_hdr *)(ip4hdr + 1);
+
+    uint16_t udp_len = rte_be_to_cpu_16(udphdr->dgram_len);
+    uint16_t data_len = udp_len - sizeof(struct rte_udp_hdr);
+
+    printf("\n  %s:\n", msg);
+    format_eth_hdr(ethhdr);
+    format_ip4_hdr(ip4hdr);
+    format_udp_hdr(udphdr);
+
+    // printf(" (%u) %s \n", data_len, (char *)(udphdr + 1));
+
+}
+
+void  format_ipv4_icmp_pkt(struct rte_mbuf *buf, const char *msg) {
+
+    printf("\n  %s:\n", msg);
+    struct rte_ether_hdr *ethhdr = rte_pktmbuf_mtod(buf, struct rte_ether_hdr*);
+    struct rte_ipv4_hdr *ip4hdr = (struct rte_ipv4_hdr *)(ethhdr + 1);
+    struct rte_icmp_hdr *icmphdr = (struct rte_icmp_hdr *)(ip4hdr + 1);
+
+    format_eth_hdr(ethhdr);
+    format_ip4_hdr(ip4hdr);
+    format_icmp_hdr(icmphdr);
 
 }
 
 
-static inline void format_ipv4_udp_pkt(struct rte_mbuf *buf, const char *msg) {
+void format_arp_pkt(struct rte_mbuf *buf, const char *msg) {
 
-    if (MYNET_DEBUG) {
+    struct rte_ether_hdr *ethhdr = rte_pktmbuf_mtod(buf, struct rte_ether_hdr*);
+    struct rte_arp_hdr *arphdr = (struct rte_arp_hdr *)(ethhdr + 1);
 
-        struct rte_ether_hdr *ethhdr = rte_pktmbuf_mtod(buf, struct rte_ether_hdr*);
-        struct rte_ipv4_hdr *ip4hdr = (struct rte_ipv4_hdr *)(ethhdr + 1);
-        struct rte_udp_hdr *udphdr = (struct rte_udp_hdr *)(ip4hdr + 1);
+    printf("\n  %s:\n", msg);
+    format_eth_hdr(ethhdr);
+    format_arp_hdr(arphdr);
 
-        printf("\n  %s:\n", msg);
-        format_eth_hdr(ethhdr);
-        format_ip4_hdr(ip4hdr);
-        format_udp_hdr(udphdr);
-
-    }
-
-}
-
-static inline void  format_ipv4_icmp_pkt(struct rte_mbuf *buf, const char *msg){
-
-    if (MYNET_DEBUG) {
-
-        printf("\n  %s:\n", msg);
-        struct rte_ether_hdr *ethhdr = rte_pktmbuf_mtod(buf, struct rte_ether_hdr*);
-        struct rte_ipv4_hdr *ip4hdr = (struct rte_ipv4_hdr *)(ethhdr + 1);
-        struct rte_icmp_hdr *icmphdr = (struct rte_icmp_hdr *)(ip4hdr + 1);
-
-        format_eth_hdr(ethhdr);
-        format_ip4_hdr(ip4hdr);
-        format_icmp_hdr(icmphdr);
-
-    }
-}
-
-
-static inline void format_ipv4_arp_pkt(struct rte_mbuf *buf, const char *msg) {
-
-    if (MYNET_DEBUG) {
-
-        struct rte_ether_hdr *ethhdr = rte_pktmbuf_mtod(buf, struct rte_ether_hdr*);
-        struct rte_arp_hdr *arphdr = (struct rte_arp_hdr *)(ethhdr + 1);
-
-        printf("\n  %s:\n", msg);
-        format_eth_hdr(ethhdr);
-        format_arp_hdr(arphdr);
-
-    }
 }
 
 
@@ -366,10 +351,15 @@ int encap_pkt_tcphdr(struct rte_mbuf *new_buf, struct tcphdr_info *tcpinfo) {
 
 	new_tcp->data_off = 0x50; // 20 字节长 tcp 头部
 	new_tcp->tcp_flags = tcpinfo->tcp_flags;
-	new_tcp->rx_win = rte_cpu_to_be_16(TCP_INITIAL_WINDOW);
+	new_tcp->rx_win = TCP_INITIAL_WINDOW;
+    new_tcp->cksum = 0;
 	new_tcp->tcp_urp = 0;
 
-    rte_memcpy((uint8_t *)(new_tcp + 1), tcpinfo.data, tcpinfo.data_len);
+    if (tcpinfo->data != NULL && tcpinfo->data_len > 0) {
+        rte_memcpy((uint8_t *)(new_tcp + 1), tcpinfo->data, tcpinfo->data_len);
+    }
+
+    new_tcp->cksum = rte_ipv4_udptcp_cksum(new_ip, new_tcp);
 
 	return 0;
 }
@@ -380,14 +370,15 @@ int encap_pkt_icmphdr(struct rte_mbuf *new_buf, struct icmphdr_info *icmpinfo) {
     struct rte_icmp_hdr *new_icmp = rte_pktmbuf_mtod_offset(new_buf, struct rte_icmp_hdr *,
                                             sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv4_hdr));
 
+
+    rte_memcpy((uint8_t *)new_icmp, icmpinfo->icmp, icmpinfo->icmp_len);
+
     new_icmp->icmp_type = icmpinfo->icmp_type;
     new_icmp->icmp_code = 0;
     new_icmp->icmp_cksum = 0;
-    new_icmp->icmp_ident = icmpinfo->icmp_ident;
-    new_icmp->icmp_seq_nb = icmpinfo->icmp_seq_nb;
-    rte_memcpy((uint8_t *)(new_icmp + 1), icmpinfo->data, icmpinfo->data_len);
 
     new_icmp->icmp_cksum = mynet_icmp_checksum(new_icmp, icmpinfo->icmp_len);
+
 	return 0;
 }
 
@@ -396,14 +387,14 @@ struct rte_mbuf *encap_arp_request_pkt(uint32_t dstip) {
 
     struct rte_mbuf *new_buf = rte_pktmbuf_alloc(g_mbuf_pool);
     if (new_buf == NULL) {
-        rte_exit(EXIT_FAILURE, "rte_pktmbuf_alloc arp buf error.\n");
+        rte_exit(EXIT_FAILURE, "rte_pktmbuf_alloc arp request buf error.\n");
     }
 
     //eth
     struct ethhdr_info ethinfo;
     memset(&ethinfo, 0, sizeof(ethinfo));
 
-    ethinfo.dst_addr = g_default_mac_1;
+    ethinfo.dst_addr = (uint8_t *)DEFAULT_MAC_1;
     ethinfo.ether_type = rte_cpu_to_be_16(RTE_ETHER_TYPE_ARP);
 
     encap_pkt_ethhdr(new_buf, &ethinfo);
@@ -412,13 +403,13 @@ struct rte_mbuf *encap_arp_request_pkt(uint32_t dstip) {
     struct arphdr_info arpinfo;
     memset(&arpinfo, 0, sizeof(arpinfo));
 
-    arpinfo.arp_tha = g_default_mac_0;
+    arpinfo.arp_tha = (uint8_t *)DEFAULT_MAC_0;
     arpinfo.arp_tip = dstip;
     arpinfo.arp_opcode = rte_cpu_to_be_16(RTE_ARP_OP_REQUEST);
 
     encap_pkt_arphdr(new_buf, &arpinfo);
 
-    format_ipv4_arp_pkt(new_buf, "send arp request");
+    format_arp_pkt(new_buf, "send arp request");
 
     return new_buf;
 }
@@ -442,7 +433,7 @@ struct rte_mbuf *encap_arp_reply_pkt(struct rte_mbuf *buf) {
     struct ethhdr_info ethinfo;
     memset(&ethinfo, 0, sizeof(ethinfo));
 
-    ethinfo.dst_addr = arphdr->arp_data.arp_sha.addr_bytes;
+    ethinfo.dst_addr = (uint8_t *)ethhdr->src_addr.addr_bytes;
     ethinfo.ether_type = rte_cpu_to_be_16(RTE_ETHER_TYPE_ARP);
 
     encap_pkt_ethhdr(new_buf, &ethinfo);
@@ -457,27 +448,27 @@ struct rte_mbuf *encap_arp_reply_pkt(struct rte_mbuf *buf) {
 
     encap_pkt_arphdr(new_buf, &arpinfo);
 
-    format_ipv4_arp_pkt(new_buf, "send arp reply");
+    format_arp_pkt(new_buf, "send arp reply");
 
     return new_buf;
 }
 
 
-struct rte_mbuf *encap_tcp_synack_pkt(struct tcpstream *stream) {
+struct rte_mbuf *encap_tcp_synack_pkt(struct tcp_stream *stream) {
 
     uint8_t *dstmac = mynet_get_dstmac(stream->sip);
     if (dstmac == NULL) {
-        printf("[ %s ==> dst mac nil. ]\n", __FUNCTION__);
-        return encap_arp_request_pkt(stream->dip);
+        mynet_debug("dst mac nil");
+        return encap_arp_request_pkt(stream->sip);
     }
 
     struct rte_mbuf *new_buf = rte_pktmbuf_alloc(g_mbuf_pool);
     if (new_buf == NULL) {
-        rte_exit(EXIT_FAILURE, "rte_pktmbuf_alloc tcp buf error.\n");
+        rte_exit(EXIT_FAILURE, "rte_pktmbuf_alloc tcp ack buf error.\n");
     }
 
-    uint16_t eth_len = sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv4_hdr) + sizeof(struct rte_tcp_hdr);
-    uint16_t ip4_len = sizeof(struct rte_ipv4_hdr) + sizeof(struct rte_tcp_hdr);
+    uint16_t ip4_len = sizeof(struct rte_tcp_hdr) + sizeof(struct rte_ipv4_hdr);
+    uint16_t eth_len = ip4_len + sizeof(struct rte_ether_hdr);
 
     new_buf->pkt_len = eth_len;
 	new_buf->data_len = eth_len;
@@ -513,16 +504,62 @@ struct rte_mbuf *encap_tcp_synack_pkt(struct tcpstream *stream) {
 
     encap_pkt_tcphdr(new_buf, &tcpinfo);
 
+    return new_buf;
+
 }
 
-struct rte_mbuf *encap_tcp_ack_pkt(struct rte_mbuf *buf) {
+
+struct rte_mbuf *encap_tcp_ack_pkt(struct tcp_stream *stream) {
+
+    uint8_t *dstmac = mynet_get_dstmac(stream->sip);
+    if (dstmac == NULL) {
+        mynet_debug("dst mac nil");
+        return encap_arp_request_pkt(stream->sip);
+    }
 
     struct rte_mbuf *new_buf = rte_pktmbuf_alloc(g_mbuf_pool);
     if (new_buf == NULL) {
         rte_exit(EXIT_FAILURE, "rte_pktmbuf_alloc tcp ack buf error.\n");
     }
 
+    uint16_t ip4_len = sizeof(struct rte_tcp_hdr) + sizeof(struct rte_ipv4_hdr);
+    uint16_t eth_len = ip4_len + sizeof(struct rte_ether_hdr);
 
+    new_buf->pkt_len = eth_len;
+	new_buf->data_len = eth_len;
+
+    // eth
+    struct ethhdr_info ethinfo;
+    memset(&ethinfo, 0, sizeof(ethinfo));
+
+    ethinfo.dst_addr = dstmac;
+    ethinfo.ether_type = rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4);
+
+    encap_pkt_ethhdr(new_buf, &ethinfo);
+
+    // ip4
+    struct ip4hdr_info ip4info;
+    memset(&ip4info, 0, sizeof(ip4info));
+
+    ip4info.dst_addr = stream->sip;
+    ip4info.next_proto_id = IPPROTO_TCP;
+    ip4info.total_length = rte_cpu_to_be_16(ip4_len);
+
+    encap_pkt_ip4hdr(new_buf, &ip4info);
+
+    // tcp
+    struct tcphdr_info tcpinfo;
+    memset(&tcpinfo, 0, sizeof(tcpinfo));
+
+    tcpinfo.src_port = stream->dport;
+    tcpinfo.dst_port = stream->sport;
+    tcpinfo.sent_seq = rte_cpu_to_be_32(stream->sent_seq);
+    tcpinfo.recv_ack = rte_cpu_to_be_32(stream->recv_ack);
+    tcpinfo.tcp_flags = RTE_TCP_ACK_FLAG;
+
+    encap_pkt_tcphdr(new_buf, &tcpinfo);
+
+    return new_buf;
 
 }
 
@@ -531,7 +568,7 @@ struct rte_mbuf *encap_icmp_reply_pkt(struct rte_mbuf *buf) {
 
     struct rte_mbuf *new_buf = rte_pktmbuf_alloc(g_mbuf_pool);
     if (new_buf == NULL) {
-        rte_exit(EXIT_FAILURE, "rte_pktmbuf_alloc icmp buf error.\n");
+        rte_exit(EXIT_FAILURE, "rte_pktmbuf_alloc icmp reply buf error.\n");
     }
 
     struct rte_ether_hdr *ethhdr = rte_pktmbuf_mtod(buf, struct rte_ether_hdr *);
@@ -540,7 +577,6 @@ struct rte_mbuf *encap_icmp_reply_pkt(struct rte_mbuf *buf) {
 
     uint16_t ip4_len = rte_be_to_cpu_16(ip4hdr->total_length);
     uint16_t eth_len = ip4_len + sizeof(struct rte_ether_hdr);
-    uint16_t data_len = ip4_len - sizeof(struct rte_ipv4_hdr) - sizeof(struct rte_icmp_hdr);
     uint16_t icmp_len = ip4_len - sizeof(struct rte_ipv4_hdr);
 
     new_buf->pkt_len = eth_len;
@@ -550,7 +586,7 @@ struct rte_mbuf *encap_icmp_reply_pkt(struct rte_mbuf *buf) {
     struct ethhdr_info ethinfo;
     memset(&ethinfo, 0, sizeof(ethinfo));
 
-    ethinfo.dst_addr = ethhdr->src_addr.addr_bytes;
+    ethinfo.dst_addr = (uint8_t *)ethhdr->src_addr.addr_bytes;
     ethinfo.ether_type = ethhdr->ether_type;
 
     encap_pkt_ethhdr(new_buf, &ethinfo);
@@ -570,10 +606,7 @@ struct rte_mbuf *encap_icmp_reply_pkt(struct rte_mbuf *buf) {
     memset(&icmpinfo, 0, sizeof(icmpinfo));
 
     icmpinfo.icmp_type = RTE_IP_ICMP_ECHO_REPLY;
-    icmpinfo.icmp_ident = icmphdr->icmp_ident;
-    icmpinfo.icmp_seq_nb = icmphdr->icmp_seq_nb;
-    icmpinfo.data = (uint8_t *)(icmphdr + 1);
-    icmpinfo.data_len = data_len;
+    icmpinfo.icmp = (uint8_t *)icmphdr;
     icmpinfo.icmp_len = icmp_len;
 
     encap_pkt_icmphdr(new_buf, &icmpinfo);
@@ -628,9 +661,12 @@ static inline int tcp_listen_proc(struct tcp_stream *stream, struct rte_mbuf *bu
         return -1;
     }
 
-    struct tcp_stream *new_stream = stream_create(-1);
+
+    format_ipv4_tcp_pkt(buf, "recv tcp syn pkt");
+
+    struct tcp_stream *new_stream = mynet_create_stream(-1, "new_recvbug", "new_sendbuf");
     if (new_stream == NULL){
-        mynet_debug("stream_create error.");
+        mynet_debug("create stream error.");
         return -1;
     }
 
@@ -647,11 +683,12 @@ static inline int tcp_listen_proc(struct tcp_stream *stream, struct rte_mbuf *bu
 
     LL_ADD(new_stream, g_streams);
 
-    struct rte_mbuf *new_buf = encap_tcp_synack_pkt(new_stream);
+    struct rte_mbuf *synack_buf = encap_tcp_synack_pkt(new_stream);
 
-    if (new_buf != NULL) {
+    if (synack_buf != NULL) {
 
-        rte_ring_mp_enqueue(new_stream->sendbuf, new_buf);
+        format_ipv4_tcp_pkt(synack_buf, "send tcp syn ack pkt");
+        rte_ring_mp_enqueue(new_stream->sendbuf, synack_buf);
     }
 
     return 0;
@@ -673,13 +710,16 @@ static inline int tcp_syn_rcvd_proc(struct tcp_stream *stream, struct rte_mbuf *
     if (!(tcphdr->tcp_flags & RTE_TCP_ACK_FLAG)) {
         mynet_debug("pkt not ack.");
         return -1;
-
     }
+
+    format_ipv4_tcp_pkt(buf, "recv tcp ack pkt");
 
     if (stream->sent_seq + 1 != rte_be_to_cpu_32(tcphdr->recv_ack)) {
-        mynet_debug("stream->sent_seq=%d tcphdr->recv_ack=%d.");;
+        mynet_debug("stream->sent_seq=%d tcphdr->recv_ack=%d.",
+                    rte_be_to_cpu_32(stream->sent_seq), rte_be_to_cpu_32(tcphdr->recv_ack));
     }
-    stream->status = TCP_STATUS_ESTABLISHED;
+
+    stream->sent_seq = rte_be_to_cpu_32(tcphdr->recv_ack);
 
     // accept
     struct tcp_stream *listener = mynet_getstream_from_ipport(0, stream->dip, 0, stream->dport);
@@ -714,26 +754,42 @@ static inline int tcp_established_proc(struct tcp_stream *stream, struct rte_mbu
 	if (tcphdr->tcp_flags & RTE_TCP_ACK_FLAG) {
         // up seqnum ?
 	    stream->sent_seq = rte_be_to_cpu_32(tcphdr->recv_ack);
-        mynet_debug("ack nothing to do...");
+        //mynet_debug("ack up ack and seq");
 	}
 
     if (tcphdr->tcp_flags & RTE_TCP_FIN_FLAG) {
-        // update acknum
-	    stream->recv_ack = rte_be_to_cpu_32(tcphdr->recv_ack);
+        format_ipv4_tcp_pkt(buf, "recv tcp fin pkt");
 
-        rte_ring_mp_enqueue(stream->recvbuf, buf);
+        // update acknum
+	    stream->recv_ack = rte_be_to_cpu_32(tcphdr->sent_seq) + 1;
 
         struct rte_mbuf *ackbuf = encap_tcp_ack_pkt(stream);
         if (ackbuf != NULL) {
+            format_ipv4_tcp_pkt(ackbuf, "send tcp ack pkt");
             rte_ring_mp_enqueue(stream->sendbuf, ackbuf);
         }
+
+        rte_ring_mp_enqueue(stream->recvbuf, buf);
+
+        pthread_mutex_lock(&stream->mutex);
+        pthread_cond_signal(&stream->cond);
+        pthread_mutex_unlock(&stream->mutex);
 
         stream->status = TCP_STATUS_CLOSE_WAIT;
 	}
 
     if (tcphdr->tcp_flags & RTE_TCP_PSH_FLAG) {
+        format_ipv4_tcp_pkt(buf, "recv tcp psh pkt");
+
         // update acknum
-	    stream->recv_ack = stream->recv_ack + data_len;
+        stream->recv_ack = rte_be_to_cpu_32(tcphdr->sent_seq) + data_len;
+
+        // reply ack
+        struct rte_mbuf *ackbuf = encap_tcp_ack_pkt(stream);
+        if (ackbuf != NULL) {
+            format_ipv4_tcp_pkt(ackbuf, "send tcp ack pkt");
+            rte_ring_mp_enqueue(stream->sendbuf, ackbuf);
+        }
 
         // enqueue recv ring
         rte_ring_mp_enqueue(stream->recvbuf, buf);
@@ -741,12 +797,6 @@ static inline int tcp_established_proc(struct tcp_stream *stream, struct rte_mbu
         pthread_mutex_lock(&stream->mutex);
         pthread_cond_signal(&stream->cond);
         pthread_mutex_unlock(&stream->mutex);
-
-        // reply ack
-        struct rte_mbuf *ackbuf = encap_tcp_ack_pkt(stream);
-        if (ackbuf != NULL) {
-            rte_ring_mp_enqueue(stream->sendbuf, ackbuf);
-        }
     }
 
 }
@@ -764,14 +814,16 @@ static inline int tcp_last_ack_proc(struct tcp_stream *stream, struct rte_mbuf *
     struct rte_tcp_hdr *tcphdr = (struct rte_tcp_hdr *)(ip4hdr + 1);
 
     if (stream->status != TCP_STATUS_LAST_ACK) {
-
+        mynet_debug("stream not last ack");
         return -1;
     }
 
     if (!(tcphdr->tcp_flags & RTE_TCP_ACK_FLAG)) {
-
+        mynet_debug("pkt not ack");
         return -1;
     }
+
+    format_ipv4_tcp_pkt(buf, "recv tcp ack pkt");
 
     stream->status = TCP_STATUS_CLOSED;
 
@@ -794,8 +846,6 @@ static inline int tcp_last_ack_proc(struct tcp_stream *stream, struct rte_mbuf *
 
 
 static inline struct rte_mbuf *pkt_tcp_proc(struct rte_mbuf *buf) {
-
-    format_ipv4_tcp_pkt(buf, "recv tcp pkt");
 
     struct rte_ipv4_hdr *ip4hdr =  rte_pktmbuf_mtod_offset(buf, struct rte_ipv4_hdr *,
 				                                            sizeof(struct rte_ether_hdr));
@@ -868,7 +918,6 @@ static inline struct rte_mbuf *pkt_udp_proc(struct rte_mbuf *buf) {
 
     struct udp_dgram *dgram = mynet_getdgram_from_ipport(ip4->dst_addr, udp->dst_port);
     if (dgram == NULL) {
-
         mynet_debug("find dgram error.");
         return NULL;
     }
@@ -978,13 +1027,13 @@ static inline struct rte_mbuf *pkt_arp_proc(struct rte_mbuf *buf) {
 
     if (arphdr->arp_opcode == rte_cpu_to_be_16(RTE_ARP_OP_REQUEST)) {
 
-        format_ipv4_arp_pkt(buf, "recv arp request");
+        format_arp_pkt(buf, "recv arp request");
 
         return encap_arp_reply_pkt(buf);
     }
     else if (arphdr->arp_opcode == rte_cpu_to_be_16(RTE_ARP_OP_REPLY)) {
 
-        format_ipv4_arp_pkt(buf, "recv arp reply");
+        format_arp_pkt(buf, "recv arp reply");
     }
     else {
 
@@ -996,7 +1045,7 @@ static inline struct rte_mbuf *pkt_arp_proc(struct rte_mbuf *buf) {
 }
 
 
-static inline int pkt_eth_proc(struct rte_mbuf *buf, inout_ring *ring) {
+static inline struct rte_mbuf *pkt_eth_proc(struct rte_mbuf *buf) {
 
 	struct rte_ether_hdr *ehdr = rte_pktmbuf_mtod(buf, struct rte_ether_hdr*);
 
@@ -1010,7 +1059,7 @@ static inline int pkt_eth_proc(struct rte_mbuf *buf, inout_ring *ring) {
 		return pkt_arp_proc(buf);
 	}
     else {
-        mynet_debug("invalid type, ehdr->ether_type=%u.", rte_be_to_cpu_16(ehdr->ether_type));
+        //mynet_debug("invalid type, ehdr->ether_type=%u.", rte_be_to_cpu_16(ehdr->ether_type));
     }
 
     return NULL;
@@ -1052,6 +1101,8 @@ static int mynet_main(void *arg) {
 
     struct inout_ring *ring = inout_ring_instance();
 
+    mynet_debug("recv buf and send to socket.");
+
     while(1) {
 
         struct rte_mbuf *rx_bufs[BURST_SIZE];
@@ -1061,7 +1112,7 @@ static int mynet_main(void *arg) {
     	for (i = 0; i < nb_de; i++) {
 
             struct rte_mbuf *buf = rx_bufs[i];
-    		struct rte_mbuf *new_buf = pkt_eth_proc(buf, ring);
+    		struct rte_mbuf *new_buf = pkt_eth_proc(buf);
             if (new_buf != NULL) {
                 rte_ring_sp_enqueue_burst(ring->out, (void**)&new_buf, 1, NULL);
             }
@@ -1080,7 +1131,7 @@ static int mynet_main(void *arg) {
                 continue;
             }
 
-            struct rte_mbuf *new_buf = socketbuf_proc(udpbuf, ring);
+            struct rte_mbuf *new_buf = socketbuf_proc(udpbuf);
             if (new_buf != NULL) {
                 rte_ring_sp_enqueue_burst(ring->out, (void**)&new_buf, 1, NULL);
             }
@@ -1100,13 +1151,15 @@ static int mynet_main(void *arg) {
                 continue;
             }
 
-            struct rte_mbuf *new_buf = socketbuf_proc(tcpbuf, ring);
+            struct rte_mbuf *new_buf = socketbuf_proc(tcpbuf);
             if (new_buf != NULL) {
                 rte_ring_sp_enqueue_burst(ring->out, (void**)&new_buf, 1, NULL);
             }
         }
 
     }
+
+    mynet_debug("quit.");
 
     return 0;
 }
@@ -1131,7 +1184,7 @@ static int work_main(void) {
 
 	}
 
-	printf("\nCore %u forwarding packets. [Ctrl+C to quit]\n", rte_lcore_id());
+	mynet_debug("forwarding packets, Ctrl+C to quit.");
 
 	/* Main work of application loop. 8< */
     struct inout_ring *ring = inout_ring_instance();
@@ -1179,6 +1232,8 @@ static int work_main(void) {
 			prev_tsc = cur_tsc;
 		}
 	}
+
+    mynet_debug("quit.");
 	/* >8 End of loop. */
 }
 

@@ -21,10 +21,12 @@
 #include <rte_malloc.h>
 #include <rte_timer.h>
 
-#define mynet_debug(format, args...) printf("[ Core %u %s:%d ==> " format " ]\n", \
-                                            rte_lcore_id(), __FUNCTION__, __LINE__,  args)
+#define mynet_debug(format, ...) printf("[ Core %u %s:%d ==> " format " ]\n", rte_lcore_id(), __FUNCTION__, __LINE__, ##__VA_ARGS__)
+
+
 
 #define MAKE_IPV4_ADDR(a, b, c, d) (a + (b<<8) + (c<<16) + (d<<24))
+
 
 #define LL_ADD(item, list) do {		            \
 	item->prev = NULL;				            \
@@ -41,6 +43,7 @@
 	item->prev = item->next = NULL;			                \
 } while(0)
 
+
 #define RX_RING_SIZE 1024
 #define TX_RING_SIZE 1024
 #define NUM_MBUFS 8191
@@ -51,8 +54,6 @@
 #define TCP_MAX_SEQ		4294967295
 #define TCP_INITIAL_WINDOW  14600
 
-
-#define MYNET_DEBUG 1
 
 extern struct rte_mempool *g_mbuf_pool;
 extern uint32_t g_local_addr;
@@ -83,11 +84,8 @@ struct ip4hdr_info {
 struct icmphdr_info {
 
 	uint8_t  icmp_type;
-	uint16_t icmp_ident;
-	uint16_t icmp_seq_nb;
-    uint8_t *data;
-    uint16_t data_len;
     uint16_t icmp_len;
+    uint8_t *icmp;
 };
 
 
@@ -110,6 +108,14 @@ struct tcphdr_info {
     uint8_t *data;
     uint16_t data_len;
 };
+
+void format_ipv4_tcp_pkt(struct rte_mbuf *buf, const char *msg);
+
+void format_ipv4_udp_pkt(struct rte_mbuf *buf, const char *msg);
+
+void  format_ipv4_icmp_pkt(struct rte_mbuf *buf, const char *msg);
+
+void format_arp_pkt(struct rte_mbuf *buf, const char *msg);
 
 int encap_pkt_ethhdr(struct rte_mbuf *new_buf, struct ethhdr_info *ethinfo);
 
@@ -135,13 +141,13 @@ struct rte_mbuf *encap_arp_request_pkt(uint32_t dstip);
 struct rte_mbuf *encap_arp_reply_pkt(struct rte_mbuf *buf);
 
 
-struct rte_mbuf *encap_icmp_reply_pkt(struct rte_mbuf *buf) {
+struct rte_mbuf *encap_icmp_reply_pkt(struct rte_mbuf *buf);
 
 
 struct rte_mbuf *encap_tcp_synack_pkt(struct tcp_stream *new_stream);
 
 
-struct rte_mbuf *encap_tcp_ack_pkt(struct rte_mbuf *new_buf, struct tcphdr_info *tcpinfo);
+struct rte_mbuf *encap_tcp_ack_pkt(struct tcp_stream *stream);
 
 
 #endif  //  __MYNET_H__

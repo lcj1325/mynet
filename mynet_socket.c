@@ -27,7 +27,7 @@ static inline int mynet_getfd() {
 struct udp_dgram *mynet_getdgram_from_fd(int sockfd) {
 
     struct udp_dgram *dgram;
-    for (dgram = g_udptable; dgram != NULL; dgram = dgram->next) {
+    for (dgram = g_dgrams; dgram != NULL; dgram = dgram->next) {
 
 		if (sockfd == dgram->fd) {
 			return dgram;
@@ -35,14 +35,13 @@ struct udp_dgram *mynet_getdgram_from_fd(int sockfd) {
 
 	}
 
-    mynet_debug("get dgram nil");
     return NULL;
 }
 
 struct udp_dgram *mynet_getdgram_from_ipport(uint32_t ip, uint16_t port) {
 
     struct udp_dgram *dgram;
-    for (dgram = g_udptable; dgram != NULL; dgram = dgram->next) {
+    for (dgram = g_dgrams; dgram != NULL; dgram = dgram->next) {
 
 		if (ip == dgram->localip && port == dgram->localport) {
 			return dgram;
@@ -50,7 +49,6 @@ struct udp_dgram *mynet_getdgram_from_ipport(uint32_t ip, uint16_t port) {
 
 	}
 
-    mynet_debug("get dgram nil");
     return NULL;
 }
 
@@ -58,7 +56,7 @@ struct udp_dgram *mynet_getdgram_from_ipport(uint32_t ip, uint16_t port) {
 struct tcp_stream *mynet_getstream_from_fd(int sockfd) {
 
     struct tcp_stream *stream;
-    for (stream = g_tcptable; stream != NULL; stream = stream->next) {
+    for (stream = g_streams; stream != NULL; stream = stream->next) {
 
 		if (sockfd == stream->fd) {
 			return stream;
@@ -66,7 +64,6 @@ struct tcp_stream *mynet_getstream_from_fd(int sockfd) {
 
 	}
 
-    mynet_debug("get stream nil");
     return NULL;
 
 }
@@ -76,7 +73,7 @@ struct tcp_stream *mynet_getstream_from_ipport(uint32_t sip, uint32_t dip,
                                                            uint16_t sport, uint16_t dport) {
 
 	struct tcp_stream *stream;
-	for (stream = g_tcptable; stream != NULL; stream = stream->next) { // client
+	for (stream = g_streams; stream != NULL; stream = stream->next) { // client
 
 		if (stream->sip == sip && stream->dip == dip &&
 			stream->sport == sport && stream->dport == dport) {
@@ -85,7 +82,7 @@ struct tcp_stream *mynet_getstream_from_ipport(uint32_t sip, uint32_t dip,
 
 	}
 
-	for (stream = g_tcptable; stream != NULL; stream = stream->next) {
+	for (stream = g_streams; stream != NULL; stream = stream->next) {
 
 		if (stream->status == TCP_STATUS_LISTEN && stream->dip == dip && stream->dport == dport) { // server
 			return stream;
@@ -98,7 +95,7 @@ struct tcp_stream *mynet_getstream_from_ipport(uint32_t sip, uint32_t dip,
 
 }
 
-static inline struct udp_dgram *dgram_create(int fd) {
+struct udp_dgram *mynet_create_dgram(int fd, const char *recvbuf, const char *sendbuf) {
 
     struct udp_dgram *dgram = rte_malloc("DGRAM", sizeof(struct udp_dgram), 0);
     if (dgram == NULL) {
@@ -110,14 +107,14 @@ static inline struct udp_dgram *dgram_create(int fd) {
 
     dgram->fd = fd;
 
-    dgram->recvbuf = rte_ring_create("RECV_BUF", RING_SIZE, rte_socket_id(), RING_F_SP_ENQ | RING_F_SC_DEQ);
+    dgram->recvbuf = rte_ring_create(recvbuf, RING_SIZE, rte_socket_id(), RING_F_SP_ENQ | RING_F_SC_DEQ);
     if (dgram->recvbuf == NULL) {
         mynet_debug("rte_ring_create dgram recv ring error.");
         rte_free(dgram);
         return NULL;
     }
 
-    dgram->sendbuf = rte_ring_create("SEND_BUF", RING_SIZE, rte_socket_id(), RING_F_SP_ENQ | RING_F_SC_DEQ);
+    dgram->sendbuf = rte_ring_create(sendbuf, RING_SIZE, rte_socket_id(), RING_F_SP_ENQ | RING_F_SC_DEQ);
     if (dgram->sendbuf == NULL) {
         mynet_debug("rte_ring_create dgram send ring error.");
         rte_ring_free(dgram->recvbuf);
@@ -134,7 +131,7 @@ static inline struct udp_dgram *dgram_create(int fd) {
     return dgram;
 }
 
-static struct tcp_stream *stream_create(int fd){
+struct tcp_stream *mynet_create_stream(int fd, const char *recvbuf, const char *sendbuf){
 
     struct tcp_stream *stream = rte_malloc("STREAM", sizeof(struct tcp_stream), 0);
     if (stream == NULL) {
@@ -146,14 +143,14 @@ static struct tcp_stream *stream_create(int fd){
 
     stream->fd = fd;
 
-    stream->recvbuf = rte_ring_create("RECV_BUF", RING_SIZE, rte_socket_id(), RING_F_SP_ENQ | RING_F_SC_DEQ);
+    stream->recvbuf = rte_ring_create(recvbuf, RING_SIZE, rte_socket_id(), RING_F_SP_ENQ | RING_F_SC_DEQ);
     if (stream->recvbuf == NULL) {
         mynet_debug("rte_ring_create stream recv ring error.");
         rte_free(stream);
         return NULL;
     }
 
-    stream->sendbuf = rte_ring_create("SEND_BUF", RING_SIZE, rte_socket_id(), RING_F_SP_ENQ | RING_F_SC_DEQ);
+    stream->sendbuf = rte_ring_create(sendbuf, RING_SIZE, rte_socket_id(), RING_F_SP_ENQ | RING_F_SC_DEQ);
     if (stream->sendbuf == NULL) {
         mynet_debug("rte_ring_create stream send ring error.");
         rte_ring_free(stream->recvbuf);
@@ -180,7 +177,7 @@ int mynet_socket(__attribute__((unused))int domain, int type, int protocol) {
 
     if (type == SOCK_DGRAM) {
 
-        struct udp_dgram *dgram = dgram_create(fd);
+        struct udp_dgram *dgram = mynet_create_dgram(fd, "dgram_recvbuf", "dgram_sendbuf");
         if (dgram == NULL) {
             return -1;
         }
@@ -188,7 +185,7 @@ int mynet_socket(__attribute__((unused))int domain, int type, int protocol) {
     }
     else if (type == SOCK_STREAM) {
 
-        struct tcp_stream *stream = stream_create(fd);
+        struct tcp_stream *stream = mynet_create_stream(fd, "stream_recvbuf", "stream_sendbuf");
         if (stream == NULL) {
             return -1;
         }
@@ -216,7 +213,7 @@ int mynet_bind(int sockfd, const struct sockaddr *addr , __attribute__((unused))
     else if (stream != NULL) {
         stream->dport = laddr->sin_port;
 	    rte_memcpy(&stream->dip, &laddr->sin_addr.s_addr, sizeof(uint32_t));
-        stream->status = TCP_STATUS_CLOSED
+        stream->status = TCP_STATUS_CLOSED;
     }
     else {
         return -1;
@@ -239,11 +236,13 @@ int mynet_listen(int sockfd, __attribute__((unused))int backlog) {
 
 }
 
-static inline struct tcp_stream *accept_get_new_stream(uint32_t dip, uint16_t dport){
+static inline struct tcp_stream *accept_get_new_stream(uint32_t dip, uint16_t dport) {
 
     struct tcp_stream *stream;
     for (stream = g_streams; stream != NULL; stream = stream->next) {
-        if (stream->fd == -1 && stream->dip == dip && stream->dport == dport) {
+        if (stream->fd == -1 && stream->status == TCP_STATUS_SYN_RCVD
+            && stream->dip == dip && stream->dport == dport) {
+
             return stream;
         }
     }
@@ -272,6 +271,7 @@ int mynet_accept(int sockfd, struct sockaddr *addr, __attribute__((unused))sockl
     }
 
 	new_stream->fd = fd;
+    new_stream->status = TCP_STATUS_ESTABLISHED;
 
     // 填充客户端 ip 和 port
 	struct sockaddr_in *saddr = (struct sockaddr_in *)addr;
@@ -371,9 +371,6 @@ ssize_t mynet_recv(int sockfd, void *buf, size_t len, __attribute__((unused))int
     uint8_t tcphdr_len = tcp->data_off >> 4;
     uint16_t data_len = tcp_len - tcphdr_len * 4;
 
-    saddr->sin_port = tcp->src_port;
-    rte_memcpy(&saddr->sin_addr.s_addr, &ip4->src_addr, sizeof(uint32_t));
-
     if (len < data_len) {
 
         rte_memcpy(buf, data, len);
@@ -464,7 +461,7 @@ ssize_t mynet_send(int sockfd, const void *buf, size_t len, __attribute__((unuse
     }
 
     struct rte_mbuf *tcpbuf = rte_pktmbuf_alloc(g_mbuf_pool);
-    if (new_buf == NULL) {
+    if (tcpbuf == NULL) {
         mynet_debug("rte_pktmbuf_alloc tcp send buf error.");
         return -1;
     }
@@ -570,6 +567,8 @@ int mynet_close(int fd) {
 
         rte_ring_mp_enqueue(stream->sendbuf, finbuf);
 
+        format_ipv4_tcp_pkt(finbuf, "send tcp fin pkt");
+
         stream->status = TCP_STATUS_LAST_ACK;
     }
 
@@ -603,6 +602,7 @@ int udp_server_main(__attribute__((unused))  void *arg) {
         rte_exit(EXIT_FAILURE, "udp socket bind failed.\n");
     }
 
+    mynet_debug("start.");
     while (1) {
         // 接收数据
         int n = mynet_recvfrom(sockfd, (char *)buffer, BUFFER_SIZE - 1, MSG_WAITALL,
@@ -622,9 +622,10 @@ int udp_server_main(__attribute__((unused))  void *arg) {
         mynet_debug("UDP Server(%d)", n);
     }
 
-    mynet_debug("UDP close(%d)", sockfd);
+    mynet_debug("UDP close server(%d)", sockfd);
     mynet_close(sockfd);
 
+    mynet_debug("quit.");
     return 0;
 }
 
@@ -656,6 +657,7 @@ int tcp_server_main(__attribute__((unused))  void *arg) {
         rte_exit(EXIT_FAILURE, "tcp socket listen failed.\n");
     }
 
+    mynet_debug("start.");
     while (1) {
 
         // 接受连接请求
@@ -679,17 +681,20 @@ int tcp_server_main(__attribute__((unused))  void *arg) {
         }
 
         if (n == 0) {
-            mynet_send("TCP Client disconnected.");
-        } else {
-            mynet_send("TCP Receive failed.");
+            mynet_debug("TCP Client disconnected.");
+        }
+        else {
+            mynet_debug("TCP Receive failed.");
         }
 
-        mynet_debug("TCP close(%d)", client_fd);
+        mynet_debug("TCP close client(%d)", client_fd);
         mynet_close(client_fd);
     }
 
-    mynet_debug("TCP close(%d)", server_fd);
+    mynet_debug("TCP close server(%d)", server_fd);
     mynet_close(server_fd);
+
+    mynet_debug("quit.");
 
     return 0;
 }
