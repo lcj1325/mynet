@@ -17,7 +17,7 @@
 work_main线程负责从port接收buf写入in-ring，同时从out-ring读取buf发送到port；
 mynet_main线程负责处理arp、icmp协议的数据包，tcp、udp协议的数据包上送到tcp_server和udp_server；
 
-![Alt text](mynet-1.bmp)
+![Alt text](mynet.bmp)
 
 # 3 运行结果
 
