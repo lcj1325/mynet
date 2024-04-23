@@ -12,7 +12,7 @@
 # ./build/mynet -l 0-3
 ```
 
-# 2 逻辑架构
+# 2 逻辑结构
 
 work_main线程负责从port接收buf写入in-ring，同时从out-ring读取buf发送到port；
 mynet_main线程负责处理arp、icmp协议的数据包，tcp、udp协议的数据包上送到tcp_server和udp_server；
@@ -169,3 +169,7 @@ TELEMETRY: No legacy callbacks, legacy socket not created
 
 
 ```
+
+# 4 声明
+
+逻辑结构参考零声学院king老师dpdk课程，代码原创，仅用于个人学习，不做其他用途。
