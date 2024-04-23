@@ -9,6 +9,5 @@
 allow_experimental_apis = true
 sources = files(
         'mynet.c',
-		'mynet_udp.c',
-		'mynet_tcp.c',
+		'mynet_socket.c',
 )
